@@ -1,0 +1,8 @@
+[package]
+name = "pdg-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rusqlite = { version = "0.39.0", features = ["bundled", "serialize"] }
+thiserror = "2.0.18"
