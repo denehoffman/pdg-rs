@@ -489,6 +489,7 @@ impl<'pdg> PdgParticle<'pdg> {
             ),
         ])?;
         self.attach_decay_products(&mut branching_fractions)?;
+        self.attach_related_data(&mut branching_fractions)?;
         Ok(branching_fractions
             .into_iter()
             .map(|branching_fraction| branching_fraction.data)
@@ -522,6 +523,7 @@ impl<'pdg> PdgParticle<'pdg> {
             ),
         ])?;
         self.attach_decay_products(&mut branching_fractions)?;
+        self.attach_related_data(&mut branching_fractions)?;
         Ok(branching_fractions
             .into_iter()
             .map(|branching_fraction| branching_fraction.data)
@@ -555,6 +557,7 @@ impl<'pdg> PdgParticle<'pdg> {
             ),
         ])?;
         self.attach_decay_products(&mut branching_fractions)?;
+        self.attach_related_data(&mut branching_fractions)?;
         Ok(branching_fractions
             .into_iter()
             .map(|branching_fraction| branching_fraction.data)
@@ -655,6 +658,7 @@ impl<'pdg> PdgParticle<'pdg> {
                                 value,
                                 kind: *kind,
                                 products: Vec::new(),
+                                related_data: Vec::new(),
                             },
                             sort: data.sort,
                         })
@@ -722,6 +726,55 @@ impl<'pdg> PdgParticle<'pdg> {
 
         for branching_fraction in branching_fractions {
             branching_fraction.data.products = products_by_pdg_id
+                .remove(&branching_fraction.data.pdg_id)
+                .unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    fn attach_related_data(
+        &self,
+        branching_fractions: &mut [BranchingFractionWithSort],
+    ) -> PdgResult<()> {
+        if branching_fractions.is_empty() {
+            return Ok(());
+        }
+
+        let pdg_ids = branching_fractions
+            .iter()
+            .map(|branching_fraction| branching_fraction.data.pdg_id.as_str())
+            .collect::<Vec<_>>();
+        let placeholders = std::iter::repeat_n("?", pdg_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT {}, target.description, target.mode_number, target.data_type, pdgid_map.source FROM pdgid_map JOIN pdgid target ON target.id = pdgid_map.target_id JOIN pdgdata ON pdgdata.pdgid_id = target.id WHERE pdgid_map.source IN ({placeholders}) AND pdgdata.edition = ? ORDER BY pdgid_map.source ASC, pdgid_map.sort ASC, pdgdata.sort ASC",
+            DataEntry::COLUMNS
+        );
+
+        let mut params = pdg_ids;
+        params.push(LATEST_EDITION);
+        let mut stmt = self.db.db().prepare(&sql)?;
+        let mut related_by_pdg_id: HashMap<PdgId, Vec<RelatedDataEntry>> = HashMap::new();
+        let rows = stmt.query_map(params_from_iter(params), |row| {
+            Ok((
+                row.get::<_, PdgId>(DataEntry::COLUMN_COUNT + 3)?,
+                RelatedDataEntry::try_from(row),
+            ))
+        })?;
+
+        for row in rows {
+            let (pdg_id, related_data) = row?;
+            if let Ok(related_data) = related_data {
+                related_by_pdg_id
+                    .entry(pdg_id)
+                    .or_default()
+                    .push(related_data);
+            }
+        }
+
+        for branching_fraction in branching_fractions {
+            branching_fraction.data.related_data = related_by_pdg_id
                 .remove(&branching_fraction.data.pdg_id)
                 .unwrap_or_default();
         }
@@ -878,6 +931,33 @@ pub struct BranchingFraction {
     pub value: ParticleData,
     pub kind: BranchingFractionKind,
     pub products: Vec<DecayProduct>,
+    pub related_data: Vec<RelatedDataEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelatedDataEntry {
+    pub pdg_id: PdgId,
+    pub description: String,
+    pub data_type: DataType,
+    pub mode_number: Option<usize>,
+    pub value: ParticleData,
+}
+
+impl TryFrom<&Row<'_>> for RelatedDataEntry {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
+        let data = DataEntry::try_from(row)?;
+        Ok(Self {
+            pdg_id: data.pdgid.clone(),
+            description: row.get(DataEntry::COLUMN_COUNT)?,
+            mode_number: row
+                .get::<_, Option<isize>>(DataEntry::COLUMN_COUNT + 1)?
+                .map(|mode_number| mode_number as usize),
+            data_type: row.get(DataEntry::COLUMN_COUNT + 2)?,
+            value: ParticleData::try_from(data).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1139,6 +1219,50 @@ mod tests {
         assert!(!muon_mode.products[0].is_outgoing);
         assert_eq!(muon_mode.products[1].name, "mu+");
         assert!(muon_mode.products[1].is_outgoing);
+    }
+
+    #[test]
+    fn branching_fractions_include_related_ratios() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+
+        let branching_fractions = pion.exclusive_branching_fractions().unwrap();
+        let muon_mode = branching_fractions
+            .iter()
+            .find(|branching_fraction| branching_fraction.pdg_id == "S008.1")
+            .unwrap();
+        let related_ratio = muon_mode
+            .related_data
+            .iter()
+            .find(|related_data| related_data.pdg_id == "S008R10")
+            .unwrap();
+
+        assert_eq!(related_ratio.data_type, DataType::BranchingRatio);
+        assert!(related_ratio.description.contains("G(pi+ --> e+ nu_e)"));
+        assert!(related_ratio.value.value > 0.0);
+        assert!(!related_ratio.value.display_value_text.is_empty());
+    }
+
+    #[test]
+    fn branching_fractions_preserve_non_ratio_related_data() {
+        let db = Pdg::open().unwrap();
+        let kaon = db.particle("K+").unwrap().unwrap();
+
+        let branching_fractions = kaon.exclusive_branching_fractions().unwrap();
+        let muon_mode = branching_fractions
+            .iter()
+            .find(|branching_fraction| branching_fraction.pdg_id == "S010.1")
+            .unwrap();
+
+        assert!(
+            muon_mode
+                .related_data
+                .iter()
+                .any(|related_data| related_data.pdg_id == "S010T"
+                    && related_data.data_type == DataType::Lifetime
+                    && related_data.description == "K+- MEAN LIFE"
+                    && related_data.value.value > 0.0)
+        );
     }
 
     #[test]

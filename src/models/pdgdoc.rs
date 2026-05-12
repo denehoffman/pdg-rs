@@ -128,7 +128,7 @@ impl FromSql for LimitType {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DataType {
     ElectricDipoleMoment,
     MagneticMoment,
@@ -157,6 +157,19 @@ pub enum DataType {
     BranchingRatio,
     Particle,
     Searches,
+}
+
+impl FromSql for DataType {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Text(bytes) => {
+                let s =
+                    std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
+                DataType::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
 }
 
 impl Display for DataType {
