@@ -46,6 +46,63 @@ impl FromSql for ParticleType {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ParticleClass {
+    GaugeBoson,
+    Lepton,
+    Quark,
+    Meson,
+    Baryon,
+}
+
+impl ParticleClass {
+    pub(crate) fn flag(self) -> &'static str {
+        match self {
+            Self::GaugeBoson => "G",
+            Self::Lepton => "L",
+            Self::Quark => "Q",
+            Self::Meson => "M",
+            Self::Baryon => "B",
+        }
+    }
+}
+
+impl Display for ParticleClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::GaugeBoson => "Gauge/Higgs Boson",
+                Self::Lepton => "Lepton",
+                Self::Quark => "Quark",
+                Self::Meson => "Meson",
+                Self::Baryon => "Baryon",
+            }
+        )
+    }
+}
+
+impl FromSql for ParticleClass {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Text(bytes) => {
+                let s =
+                    std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
+                match s {
+                    "G" => Ok(Self::GaugeBoson),
+                    "L" => Ok(Self::Lepton),
+                    "Q" => Ok(Self::Quark),
+                    "M" => Ok(Self::Meson),
+                    "B" => Ok(Self::Baryon),
+                    _ => Err(FromSqlError::InvalidType),
+                }
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum Charge {
     PlusPlus,
@@ -283,6 +340,7 @@ pub struct PdgParticle<'pdg> {
     pub pdg_id: PdgId,
     pub name: String,
     pub particle_type: ParticleType,
+    pub particle_class: ParticleClass,
     pub mcid: Option<isize>,
     pub charge: Charge,
     pub quantum_i: Option<Isospin>,
@@ -296,8 +354,8 @@ impl Display for PdgParticle<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} ({}, {}, charge {})",
-            self.name, self.pdg_id, self.particle_type, self.charge
+            "{} ({}, {}, {}, charge {})",
+            self.name, self.pdg_id, self.particle_class, self.particle_type, self.charge
         )?;
 
         if let Some(mcid) = self.mcid {
@@ -330,6 +388,23 @@ impl Display for PdgParticle<'_> {
 }
 
 impl<'pdg> PdgParticle<'pdg> {
+    pub(crate) fn from_row(db: &'pdg Pdg, row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            db,
+            pdg_id: row.get(0)?,
+            name: row.get(1)?,
+            particle_type: row.get(2)?,
+            particle_class: row.get(3)?,
+            mcid: row.get(4)?,
+            charge: row.get(5)?,
+            quantum_i: row.get(6)?,
+            quantum_g: row.get(7)?,
+            quantum_j: row.get(8)?,
+            quantum_p: row.get(9)?,
+            quantum_c: row.get(10)?,
+        })
+    }
+
     pub fn mass(&self) -> PdgResult<Option<Mass>> {
         Ok(self.query_map(DataType::Mass, LATEST_EDITION, |data| {
             ParticleData::try_from(data).ok().map(|data| Mass { data })
@@ -795,7 +870,7 @@ pub struct BranchingRatio {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BranchingFractionKind, LimitType, Pdg};
+    use crate::{BranchingFractionKind, LimitType, ParticleClass, Pdg};
 
     #[test]
     fn displays_particle_identity_and_quantum_numbers() {
@@ -804,7 +879,7 @@ mod tests {
 
         assert_eq!(
             pion.to_string(),
-            "pi+ (S008, Particle, charge +1), MCID 211, I=1, G=-, J=0, P=-"
+            "pi+ (S008, Meson, Particle, charge +1), MCID 211, I=1, G=-, J=0, P=-"
         );
     }
 
@@ -815,7 +890,7 @@ mod tests {
 
         assert_eq!(
             photon.to_string(),
-            "gamma (S000, Self-Conjugate, charge 0), MCID 22, I=0 or 1, J=1, P=-, C=-"
+            "gamma (S000, Gauge/Higgs Boson, Self-Conjugate, charge 0), MCID 22, I=0 or 1, J=1, P=-, C=-"
         );
     }
 
@@ -826,26 +901,96 @@ mod tests {
         let down_quark = db.particle("d").unwrap().unwrap();
         assert_eq!(
             down_quark.to_string(),
-            "d (Q001, Particle, charge -1/3), MCID 1, I=1/2, J=1/2, P=+"
+            "d (Q001, Quark, Particle, charge -1/3), MCID 1, I=1/2, J=1/2, P=+"
         );
 
         let up_quark = db.particle("u").unwrap().unwrap();
         assert_eq!(
             up_quark.to_string(),
-            "u (Q002, Particle, charge +2/3), MCID 2, I=1/2, J=1/2, P=+"
+            "u (Q002, Quark, Particle, charge +2/3), MCID 2, I=1/2, J=1/2, P=+"
         );
 
         let antidown_quark = db.particle("dbar").unwrap().unwrap();
         assert_eq!(
             antidown_quark.to_string(),
-            "dbar (Q001, Antiparticle, charge +1/3), MCID -1, I=1/2, J=1/2, P=-"
+            "dbar (Q001, Quark, Antiparticle, charge +1/3), MCID -1, I=1/2, J=1/2, P=-"
         );
 
         let antiup_quark = db.particle("ubar").unwrap().unwrap();
         assert_eq!(
             antiup_quark.to_string(),
-            "ubar (Q002, Antiparticle, charge -2/3), MCID -2, I=1/2, J=1/2, P=-"
+            "ubar (Q002, Quark, Antiparticle, charge -2/3), MCID -2, I=1/2, J=1/2, P=-"
         );
+    }
+
+    #[test]
+    fn classifies_representative_particles() {
+        let db = Pdg::open().unwrap();
+
+        assert_eq!(
+            db.particle("pi+").unwrap().unwrap().particle_class,
+            ParticleClass::Meson
+        );
+        assert_eq!(
+            db.particle("p").unwrap().unwrap().particle_class,
+            ParticleClass::Baryon
+        );
+        assert_eq!(
+            db.particle("e-").unwrap().unwrap().particle_class,
+            ParticleClass::Lepton
+        );
+        assert_eq!(
+            db.particle("d").unwrap().unwrap().particle_class,
+            ParticleClass::Quark
+        );
+        assert_eq!(
+            db.particle("gamma").unwrap().unwrap().particle_class,
+            ParticleClass::GaugeBoson
+        );
+    }
+
+    #[test]
+    fn checks_particle_classes() {
+        let db = Pdg::open().unwrap();
+
+        let pion = db.particle("pi+").unwrap().unwrap();
+        assert!(pion.particle_class == ParticleClass::Meson);
+        assert!(db.particle("p").unwrap().unwrap().particle_class == ParticleClass::Baryon);
+        assert!(db.particle("e-").unwrap().unwrap().particle_class == ParticleClass::Lepton);
+        assert!(db.particle("d").unwrap().unwrap().particle_class == ParticleClass::Quark);
+        assert!(db.particle("gamma").unwrap().unwrap().particle_class == ParticleClass::GaugeBoson);
+    }
+
+    #[test]
+    fn queries_particles_by_class() {
+        let db = Pdg::open().unwrap();
+        let leptons = db.particles_by_class(ParticleClass::Lepton).unwrap();
+
+        assert!(
+            leptons
+                .iter()
+                .all(|particle| particle.particle_class == ParticleClass::Lepton)
+        );
+        assert!(leptons.iter().any(|particle| particle.name == "e-"));
+        assert!(leptons.iter().any(|particle| particle.name == "mu-"));
+        assert!(leptons.iter().any(|particle| particle.name == "nu_e"));
+        assert!(!leptons.iter().any(|particle| particle.name == "pi+"));
+    }
+
+    #[test]
+    fn searches_particles_by_class() {
+        let db = Pdg::open().unwrap();
+        let pion_mesons = db.search_by_class("pi", ParticleClass::Meson).unwrap();
+        let pion_baryons = db.search_by_class("pi", ParticleClass::Baryon).unwrap();
+
+        assert!(!pion_mesons.is_empty());
+        assert!(
+            pion_mesons
+                .iter()
+                .all(|particle| particle.particle_class == ParticleClass::Meson)
+        );
+        assert!(pion_mesons.iter().any(|particle| particle.name == "pi+"));
+        assert!(!pion_baryons.iter().any(|particle| particle.name == "pi+"));
     }
 
     #[test]

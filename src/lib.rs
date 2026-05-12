@@ -32,6 +32,10 @@ pub struct Pdg {
 }
 
 impl Pdg {
+    const PARTICLE_COLUMNS: &'static str = "pdgparticle.pdgid, name, cc_type, pdgid.flags, mcid, charge, quantum_i, quantum_g, quantum_j, quantum_p, quantum_c";
+    const PARTICLE_JOIN: &'static str =
+        "JOIN pdgid ON pdgid.pdgid = pdgparticle.pdgid AND pdgid.data_type = 'PART'";
+
     pub fn open() -> PdgResult<Self> {
         let mut conn = Connection::open_in_memory()?;
         conn.deserialize_bytes(MAIN_DB, PDG_BYTES)?;
@@ -44,69 +48,75 @@ impl Pdg {
 
     pub fn particle(&self, name: impl Into<String>) -> PdgResult<Option<PdgParticle<'_>>> {
         let name = name.into();
-        let mut stmt = self.conn
-            .prepare("SELECT pdgid, name, cc_type, mcid, charge, quantum_i, quantum_g, quantum_j, quantum_p, quantum_c FROM pdgparticle WHERE name = ?1")?;
+        let sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE name = ?1",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_row([&name], |row| {
-                Ok(PdgParticle {
-                    db: self,
-                    pdg_id: row.get(0)?,
-                    name: row.get(1)?,
-                    particle_type: row.get(2)?,
-                    mcid: row.get(3)?,
-                    charge: row.get(4)?,
-                    quantum_i: row.get(5)?,
-                    quantum_g: row.get(6)?,
-                    quantum_j: row.get(7)?,
-                    quantum_p: row.get(8)?,
-                    quantum_c: row.get(9)?,
-                })
-            })
+            .query_row([&name], |row| PdgParticle::from_row(self, row))
             .optional()?)
     }
 
     pub fn search(&self, name: impl Into<String>) -> PdgResult<Vec<PdgParticle<'_>>> {
         let name = name.into();
-        let mut stmt = self.conn
-            .prepare("SELECT pdgid, name, cc_type, mcid, charge, quantum_i, quantum_g, quantum_j, quantum_p, quantum_c FROM pdgparticle WHERE name LIKE '%' || ?1 || '%'")?;
+        let sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE name LIKE '%' || ?1 || '%'",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_map([&name], |row| {
-                Ok(PdgParticle {
-                    db: self,
-                    pdg_id: row.get(0)?,
-                    name: row.get(1)?,
-                    particle_type: row.get(2)?,
-                    mcid: row.get(3)?,
-                    charge: row.get(4)?,
-                    quantum_i: row.get(5)?,
-                    quantum_g: row.get(6)?,
-                    quantum_j: row.get(7)?,
-                    quantum_p: row.get(8)?,
-                    quantum_c: row.get(9)?,
-                })
-            })?
+            .query_map([&name], |row| PdgParticle::from_row(self, row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn pdgid(&self, pdgid: isize) -> PdgResult<Option<PdgParticle<'_>>> {
-        let mut stmt = self.conn
-            .prepare("SELECT pdgid, name, cc_type, mcid, charge, quantum_i, quantum_g, quantum_j, quantum_p, quantum_c FROM pdgparticle WHERE mcid = ?1")?;
+        let sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE mcid = ?1",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_row([&pdgid], |row| {
-                Ok(PdgParticle {
-                    db: self,
-                    pdg_id: row.get(0)?,
-                    name: row.get(1)?,
-                    particle_type: row.get(2)?,
-                    mcid: row.get(3)?,
-                    charge: row.get(4)?,
-                    quantum_i: row.get(5)?,
-                    quantum_g: row.get(6)?,
-                    quantum_j: row.get(7)?,
-                    quantum_p: row.get(8)?,
-                    quantum_c: row.get(9)?,
-                })
-            })
+            .query_row([&pdgid], |row| PdgParticle::from_row(self, row))
             .optional()?)
+    }
+
+    pub fn particles_by_class(
+        &self,
+        particle_class: ParticleClass,
+    ) -> PdgResult<Vec<PdgParticle<'_>>> {
+        let sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE pdgid.flags = ?1 ORDER BY pdgparticle.pdgid, name",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt
+            .query_map([particle_class.flag()], |row| {
+                PdgParticle::from_row(self, row)
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn search_by_class(
+        &self,
+        name: impl Into<String>,
+        particle_class: ParticleClass,
+    ) -> PdgResult<Vec<PdgParticle<'_>>> {
+        let name = name.into();
+        let sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE name LIKE '%' || ?1 || '%' AND pdgid.flags = ?2 ORDER BY pdgparticle.pdgid, name",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt
+            .query_map([&name, particle_class.flag()], |row| {
+                PdgParticle::from_row(self, row)
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
     }
 }
