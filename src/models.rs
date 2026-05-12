@@ -14,6 +14,9 @@ pub use pdgdata::DataEntry;
 mod pdgmeta;
 pub use pdgmeta::{PdgFootnote, PdgText};
 
+mod pdgmeasurement;
+pub use pdgmeasurement::{PdgMeasurement, PdgMeasurementValue, PdgReference};
+
 mod conversions;
 pub use conversions::QuantumNumberConversionError;
 

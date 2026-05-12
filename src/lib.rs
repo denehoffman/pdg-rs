@@ -139,4 +139,25 @@ impl Pdg {
             .query_map([&pdg_id], |row| PdgFootnote::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
+
+    pub fn measurements_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgMeasurement>> {
+        let pdg_id = pdg_id.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT pdgmeasurement.id, pdgmeasurement.pdgid, event_count, confidence_level, place, technique, charge, changebar, comment, sort, document_id, publication_name, publication_year, doi, inspire_id, title FROM pdgmeasurement JOIN pdgreference ON pdgreference.id = pdgmeasurement.pdgreference_id WHERE pdgmeasurement.pdgid = ?1 ORDER BY sort",
+        )?;
+        let mut measurements = stmt
+            .query_map([&pdg_id], |row| PdgMeasurement::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut value_stmt = self.conn.prepare(
+            "SELECT column_name, value_text, unit_text, display_value_text, display_power_of_ten, display_in_percent, limit_type, used_in_average, used_in_fit, value, error_positive, error_negative, stat_error_positive, stat_error_negative, syst_error_positive, syst_error_negative, sort FROM pdgmeasurement_values WHERE pdgmeasurement_id = ?1 ORDER BY sort",
+        )?;
+        for measurement in &mut measurements {
+            measurement.values = value_stmt
+                .query_map([measurement.id], |row| PdgMeasurementValue::try_from(row))?
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+
+        Ok(measurements)
+    }
 }

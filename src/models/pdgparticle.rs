@@ -6,7 +6,8 @@ use rusqlite::{
 };
 
 use crate::{
-    DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgFootnote, PdgId, PdgResult, PdgText,
+    DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgFootnote, PdgId, PdgMeasurement,
+    PdgResult, PdgText,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -415,6 +416,13 @@ impl<'pdg> PdgParticle<'pdg> {
 
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
         self.db.footnotes_for(&self.pdg_id)
+    }
+
+    pub fn measurements_for(&self, data_type: DataType) -> PdgResult<Vec<PdgMeasurement>> {
+        Ok(match self.query(data_type, LATEST_EDITION)? {
+            Some(data) => self.db.measurements_for(data.pdgid)?,
+            None => Vec::new(),
+        })
     }
 
     pub fn mass(&self) -> PdgResult<Option<Mass>> {
@@ -882,7 +890,7 @@ pub struct BranchingRatio {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BranchingFractionKind, LimitType, ParticleClass, Pdg};
+    use crate::{BranchingFractionKind, DataType, LimitType, ParticleClass, Pdg};
 
     #[test]
     fn displays_particle_identity_and_quantum_numbers() {
@@ -1040,6 +1048,59 @@ mod tests {
 
         assert!(pion.texts().unwrap().is_empty());
         assert!(pion.footnotes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn loads_measurements_for_data_entries() {
+        let db = Pdg::open().unwrap();
+        let measurements = db.measurements_for("S008M").unwrap();
+        let first = measurements.first().unwrap();
+        let first_value = first.values.first().unwrap();
+
+        assert_eq!(first.pdg_id, "S008M");
+        assert_eq!(first.reference.document_id.trim(), "DAUM 2019");
+        assert_eq!(first.reference.publication_year, Some(2019));
+        assert_eq!(
+            first.reference.doi.as_deref(),
+            Some("10.1016/j.physletb.2019.07.027")
+        );
+        assert!(
+            first
+                .reference
+                .title
+                .as_ref()
+                .unwrap()
+                .contains("charged and neutral pion masses")
+        );
+        assert_eq!(first_value.column_name.as_deref(), Some("VALUE"));
+        assert_eq!(
+            first_value.display_value_text.as_deref(),
+            Some("139.57021 +-0.00014")
+        );
+        assert_eq!(first_value.unit_text.as_deref(), Some("MeV"));
+        assert!(first_value.used_in_average);
+        assert!(first_value.used_in_fit);
+    }
+
+    #[test]
+    fn particle_loads_measurements_for_data_type() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+        let particle_measurements = pion.measurements_for(DataType::Mass).unwrap();
+        let direct_measurements = db.measurements_for("S008M").unwrap();
+
+        assert_eq!(particle_measurements.len(), direct_measurements.len());
+        assert_eq!(
+            particle_measurements[0].reference.document_id,
+            direct_measurements[0].reference.document_id
+        );
+    }
+
+    #[test]
+    fn missing_measurements_return_empty_vec() {
+        let db = Pdg::open().unwrap();
+
+        assert!(db.measurements_for("NO_SUCH_PDGID").unwrap().is_empty());
     }
 
     #[test]
