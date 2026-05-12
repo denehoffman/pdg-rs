@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Display, ops::Deref};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    ops::Deref,
+};
 
 use rusqlite::{
     OptionalExtension, Row, params_from_iter,
@@ -6,8 +10,8 @@ use rusqlite::{
 };
 
 use crate::{
-    DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgFootnote, PdgId, PdgMeasurement,
-    PdgResult, PdgText,
+    DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgFootnote, PdgId, PdgItem,
+    PdgMeasurement, PdgResult, PdgText,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -416,6 +420,37 @@ impl<'pdg> PdgParticle<'pdg> {
 
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
         self.db.footnotes_for(&self.pdg_id)
+    }
+
+    pub fn item(&self) -> PdgResult<Option<PdgItem>> {
+        self.db.item(&self.name)
+    }
+
+    pub fn item_children(&self) -> PdgResult<Vec<crate::PdgItemChild<'_>>> {
+        self.db.item_children(&self.name)
+    }
+
+    pub fn parent_items(&self) -> PdgResult<Vec<PdgItem>> {
+        self.db.item_parents(&self.name)
+    }
+
+    pub fn related_particles(&self) -> PdgResult<Vec<PdgParticle<'_>>> {
+        let mut related_particles = Vec::new();
+        let mut seen = HashSet::new();
+        seen.insert(self.name.clone());
+
+        for parent in self.parent_items()? {
+            for child in self.db.item_children(parent.name)? {
+                let Some(particle) = child.particle else {
+                    continue;
+                };
+                if seen.insert(particle.name.clone()) {
+                    related_particles.push(particle);
+                }
+            }
+        }
+
+        Ok(related_particles)
     }
 
     pub fn measurements_for(&self, data_type: DataType) -> PdgResult<Vec<PdgMeasurement>> {
@@ -970,7 +1005,7 @@ pub struct BranchingRatio {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BranchingFractionKind, DataType, LimitType, ParticleClass, Pdg};
+    use crate::{BranchingFractionKind, DataType, LimitType, ParticleClass, Pdg, PdgItemType};
 
     #[test]
     fn displays_particle_identity_and_quantum_numbers() {
@@ -1090,6 +1125,83 @@ mod tests {
         );
         assert!(pion_mesons.iter().any(|particle| particle.name == "pi+"));
         assert!(!pion_baryons.iter().any(|particle| particle.name == "pi+"));
+    }
+
+    #[test]
+    fn loads_items_by_name() {
+        let db = Pdg::open().unwrap();
+        let pion_pair = db.item("pi+-").unwrap().unwrap();
+
+        assert_eq!(pion_pair.name, "pi+-");
+        assert_eq!(pion_pair.item_type, PdgItemType::ChargeMultiplet);
+        assert!(db.item("NO_SUCH_ITEM").unwrap().is_none());
+    }
+
+    #[test]
+    fn loads_item_children_with_particles() {
+        let db = Pdg::open().unwrap();
+        let pion_children = db.item_children("pi+-").unwrap();
+
+        assert_eq!(pion_children.len(), 2);
+        assert_eq!(pion_children[0].item.name, "pi+");
+        assert_eq!(pion_children[0].sort, 0);
+        assert_eq!(pion_children[0].item.item_type, PdgItemType::Particle);
+        assert_eq!(pion_children[0].particle.as_ref().unwrap().name, "pi+");
+        assert_eq!(pion_children[1].item.name, "pi-");
+        assert_eq!(pion_children[1].sort, 1);
+
+        let w_children = db.item_children("W").unwrap();
+        assert_eq!(
+            w_children
+                .iter()
+                .map(|child| child.item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["W+", "W-"]
+        );
+        assert!(db.item_children("NO_SUCH_ITEM").unwrap().is_empty());
+    }
+
+    #[test]
+    fn particle_exposes_item_context() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+
+        assert_eq!(pion.item().unwrap().unwrap().name, "pi+");
+        let parent_items = pion.parent_items().unwrap();
+
+        assert!(
+            parent_items
+                .iter()
+                .any(|item| item.name == "pi+-" && item.item_type == PdgItemType::ChargeMultiplet)
+        );
+        assert!(
+            parent_items
+                .iter()
+                .any(|item| item.name == "pi" && item.item_type == PdgItemType::Group)
+        );
+    }
+
+    #[test]
+    fn particle_exposes_related_particles() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+        let related_particles = pion.related_particles().unwrap();
+
+        assert!(
+            related_particles
+                .iter()
+                .any(|particle| particle.name == "pi-")
+        );
+        assert!(
+            related_particles
+                .iter()
+                .any(|particle| particle.name == "pi0")
+        );
+        assert!(
+            !related_particles
+                .iter()
+                .any(|particle| particle.name == "pi+")
+        );
     }
 
     #[test]

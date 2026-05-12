@@ -120,6 +120,54 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem>> {
+        let name = name.into();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, item_type FROM pdgitem WHERE name = ?1")?;
+        Ok(stmt
+            .query_row([&name], |row| PdgItem::try_from(row))
+            .optional()?)
+    }
+
+    pub fn item_children(&self, name: impl Into<String>) -> PdgResult<Vec<PdgItemChild<'_>>> {
+        let name = name.into();
+        let child_items = {
+            let mut stmt = self.conn.prepare(
+                "SELECT child.name, child.item_type, pdgitem_map.sort FROM pdgitem_map JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id JOIN pdgitem child ON child.id = pdgitem_map.target_id WHERE parent.name = ?1 ORDER BY pdgitem_map.sort",
+            )?;
+            stmt.query_map([&name], |row| {
+                Ok((PdgItem::try_from(row)?, row.get::<_, isize>(2)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        child_items
+            .into_iter()
+            .map(|(item, sort)| {
+                let particle = match &item.item_type {
+                    PdgItemType::Particle => self.particle(&item.name)?,
+                    _ => None,
+                };
+                Ok(PdgItemChild {
+                    item,
+                    sort,
+                    particle,
+                })
+            })
+            .collect()
+    }
+
+    pub fn item_parents(&self, name: impl Into<String>) -> PdgResult<Vec<PdgItem>> {
+        let name = name.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT parent.name, parent.item_type FROM pdgitem_map JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id JOIN pdgitem child ON child.id = pdgitem_map.target_id WHERE child.name = ?1 ORDER BY parent.item_type, parent.name",
+        )?;
+        Ok(stmt
+            .query_map([&name], |row| PdgItem::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn texts_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgText>> {
         let pdg_id = pdg_id.into();
         let mut stmt = self.conn.prepare(
