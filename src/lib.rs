@@ -6,6 +6,8 @@ pub use models::*;
 
 static PDG_BYTES: &[u8] = include_bytes!("../data/pdgall-2025-v0.2.2.sqlite");
 
+pub const LATEST_EDITION: &'static str = "2025";
+
 pub type PdgResult<T> = Result<T, PdgError>;
 
 #[derive(Error, Debug)]
