@@ -32,7 +32,7 @@ pub struct Pdg {
 }
 
 impl Pdg {
-    const PARTICLE_COLUMNS: &'static str = "pdgparticle.pdgid, name, cc_type, pdgid.flags, mcid, charge, quantum_i, quantum_g, quantum_j, quantum_p, quantum_c";
+    const PARTICLE_COLUMNS: &'static str = "pdgparticle.pdgid, name, pdgid.description, cc_type, pdgid.flags, mcid, charge, quantum_i, quantum_g, quantum_j, quantum_p, quantum_c";
     const PARTICLE_JOIN: &'static str =
         "JOIN pdgid ON pdgid.pdgid = pdgparticle.pdgid AND pdgid.data_type = 'PART'";
 
@@ -117,6 +117,26 @@ impl Pdg {
             .query_map([&name, particle_class.flag()], |row| {
                 PdgParticle::from_row(self, row)
             })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn texts_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgText>> {
+        let pdg_id = pdg_id.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT pdgid, type, text, sort FROM pdgtext WHERE pdgid = ?1 ORDER BY sort",
+        )?;
+        Ok(stmt
+            .query_map([&pdg_id], |row| PdgText::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn footnotes_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgFootnote>> {
+        let pdg_id = pdg_id.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT pdgid, footnote_index, text, changebar FROM pdgfootnote WHERE pdgid = ?1 ORDER BY footnote_index",
+        )?;
+        Ok(stmt
+            .query_map([&pdg_id], |row| PdgFootnote::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 }

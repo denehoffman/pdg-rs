@@ -11,6 +11,9 @@ pub use pdgparticle::{
 mod pdgdata;
 pub use pdgdata::DataEntry;
 
+mod pdgmeta;
+pub use pdgmeta::{PdgFootnote, PdgText};
+
 mod conversions;
 pub use conversions::QuantumNumberConversionError;
 

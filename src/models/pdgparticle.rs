@@ -5,7 +5,9 @@ use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
 };
 
-use crate::{DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgId, PdgResult};
+use crate::{
+    DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgFootnote, PdgId, PdgResult, PdgText,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum ParticleType {
@@ -339,6 +341,7 @@ pub struct PdgParticle<'pdg> {
     pub(crate) db: &'pdg Pdg,
     pub pdg_id: PdgId,
     pub name: String,
+    pub description: String,
     pub particle_type: ParticleType,
     pub particle_class: ParticleClass,
     pub mcid: Option<isize>,
@@ -393,16 +396,25 @@ impl<'pdg> PdgParticle<'pdg> {
             db,
             pdg_id: row.get(0)?,
             name: row.get(1)?,
-            particle_type: row.get(2)?,
-            particle_class: row.get(3)?,
-            mcid: row.get(4)?,
-            charge: row.get(5)?,
-            quantum_i: row.get(6)?,
-            quantum_g: row.get(7)?,
-            quantum_j: row.get(8)?,
-            quantum_p: row.get(9)?,
-            quantum_c: row.get(10)?,
+            description: row.get(2)?,
+            particle_type: row.get(3)?,
+            particle_class: row.get(4)?,
+            mcid: row.get(5)?,
+            charge: row.get(6)?,
+            quantum_i: row.get(7)?,
+            quantum_g: row.get(8)?,
+            quantum_j: row.get(9)?,
+            quantum_p: row.get(10)?,
+            quantum_c: row.get(11)?,
         })
+    }
+
+    pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
+        self.db.texts_for(&self.pdg_id)
+    }
+
+    pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
+        self.db.footnotes_for(&self.pdg_id)
     }
 
     pub fn mass(&self) -> PdgResult<Option<Mass>> {
@@ -927,10 +939,9 @@ mod tests {
     fn classifies_representative_particles() {
         let db = Pdg::open().unwrap();
 
-        assert_eq!(
-            db.particle("pi+").unwrap().unwrap().particle_class,
-            ParticleClass::Meson
-        );
+        let pion = db.particle("pi+").unwrap().unwrap();
+        assert_eq!(pion.description, "pi+-");
+        assert_eq!(pion.particle_class, ParticleClass::Meson);
         assert_eq!(
             db.particle("p").unwrap().unwrap().particle_class,
             ParticleClass::Baryon
@@ -991,6 +1002,44 @@ mod tests {
         );
         assert!(pion_mesons.iter().any(|particle| particle.name == "pi+"));
         assert!(!pion_baryons.iter().any(|particle| particle.name == "pi+"));
+    }
+
+    #[test]
+    fn loads_texts_for_data_entries() {
+        let db = Pdg::open().unwrap();
+        let texts = db.texts_for("S008M").unwrap();
+
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0].pdg_id, "S008M");
+        assert_eq!(texts[0].text_type, "h");
+        assert_eq!(texts[0].sort, 1);
+        assert!(
+            texts[0]
+                .text
+                .as_ref()
+                .unwrap()
+                .contains("charged pion mass measurements")
+        );
+    }
+
+    #[test]
+    fn loads_footnotes_for_data_entries() {
+        let db = Pdg::open().unwrap();
+        let footnotes = db.footnotes_for("S008M").unwrap();
+
+        assert!(footnotes.len() >= 10);
+        assert_eq!(footnotes[0].pdg_id.as_deref(), Some("S008M"));
+        assert_eq!(footnotes[0].index, Some(1));
+        assert!(footnotes[0].text.as_ref().unwrap().contains("DAUM 2019"));
+    }
+
+    #[test]
+    fn particle_forwards_text_and_footnote_lookups() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+
+        assert!(pion.texts().unwrap().is_empty());
+        assert!(pion.footnotes().unwrap().is_empty());
     }
 
     #[test]
