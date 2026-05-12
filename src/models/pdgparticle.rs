@@ -1,22 +1,332 @@
 use std::{collections::HashMap, fmt::Display, ops::Deref};
 
-use rusqlite::{OptionalExtension, Row, params_from_iter};
+use rusqlite::{
+    OptionalExtension, Row, params_from_iter,
+    types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
+};
 
 use crate::{DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgId, PdgResult};
+
+#[derive(Copy, Clone, Debug)]
+pub enum ParticleType {
+    Particle,
+    Antiparticle,
+    SelfConjugate,
+}
+
+impl Display for ParticleType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Particle => "Particle",
+                Self::Antiparticle => "Antiparticle",
+                Self::SelfConjugate => "Self-Conjugate",
+            }
+        )
+    }
+}
+
+impl FromSql for ParticleType {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Text(bytes) => {
+                let s =
+                    std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
+                match s {
+                    "P" => Ok(Self::Particle),
+                    "A" => Ok(Self::Antiparticle),
+                    "S" => Ok(Self::SelfConjugate),
+                    _ => Err(FromSqlError::InvalidType),
+                }
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Charge {
+    PlusPlus,
+    Plus,
+    Neutral,
+    Minus,
+    MinusMinus,
+    PlusOneThird,
+    PlusTwoThirds,
+    MinusOneThird,
+    MinusTwoThirds,
+}
+
+impl Display for Charge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::PlusPlus => "+2",
+                Self::Plus => "+1",
+                Self::Neutral => "0",
+                Self::Minus => "-1",
+                Self::MinusMinus => "-2",
+                Self::PlusOneThird => "+1/3",
+                Self::PlusTwoThirds => "+2/3",
+                Self::MinusOneThird => "-1/3",
+                Self::MinusTwoThirds => "-2/3",
+            }
+        )
+    }
+}
+
+impl FromSql for Charge {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Real(v) => Charge::from_f64(v).ok_or(FromSqlError::InvalidType),
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+impl Charge {
+    fn from_f64(value: f64) -> Option<Self> {
+        const EPSILON: f64 = 1e-12;
+        [
+            (2.0, Self::PlusPlus),
+            (1.0, Self::Plus),
+            (0.0, Self::Neutral),
+            (-1.0, Self::Minus),
+            (-2.0, Self::MinusMinus),
+            (1.0 / 3.0, Self::PlusOneThird),
+            (2.0 / 3.0, Self::PlusTwoThirds),
+            (-1.0 / 3.0, Self::MinusOneThird),
+            (-2.0 / 3.0, Self::MinusTwoThirds),
+        ]
+        .into_iter()
+        .find_map(|(charge, variant)| (value - charge).abs().lt(&EPSILON).then_some(variant))
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Isospin {
+    I0,
+    I1,
+    I2,
+    I3,
+    Photon,
+    Unknown,
+}
+
+impl Display for Isospin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::I0 => "0",
+                Self::I1 => "1/2",
+                Self::I2 => "1",
+                Self::I3 => "3/2",
+                Self::Photon => "0 or 1",
+                Self::Unknown => "Unknown",
+            }
+        )
+    }
+}
+
+impl FromSql for Isospin {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Text(bytes) => {
+                let s =
+                    std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
+                match s {
+                    "0" => Ok(Self::I0),
+                    "0,1" => Ok(Self::Photon),
+                    "1/2" => Ok(Self::I1),
+                    "1" => Ok(Self::I2),
+                    "3/2" => Ok(Self::I3),
+                    "?" => Ok(Self::Unknown),
+                    _ => Err(FromSqlError::InvalidType),
+                }
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AngularMomentum {
+    J0,
+    J1,
+    J2,
+    J3,
+    J4,
+    J5,
+    J6,
+    J7,
+    J8,
+    J9,
+    J10,
+    J11,
+    J12,
+    J13,
+    J14,
+    J15,
+    Custom(String),
+    Unknown,
+}
+
+impl Display for AngularMomentum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::J0 => "0",
+                Self::J1 => "1/2",
+                Self::J2 => "1",
+                Self::J3 => "3/2",
+                Self::J4 => "2",
+                Self::J5 => "5/2",
+                Self::J6 => "3",
+                Self::J7 => "7/2",
+                Self::J8 => "4",
+                Self::J9 => "9/2",
+                Self::J10 => "5",
+                Self::J11 => "11/2",
+                Self::J12 => "6",
+                Self::J13 => "13/2",
+                Self::J14 => "7",
+                Self::J15 => "15/2",
+                Self::Custom(s) => s,
+                Self::Unknown => "Unknown",
+            }
+        )
+    }
+}
+
+impl FromSql for AngularMomentum {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Text(bytes) => {
+                let s =
+                    std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
+                match s {
+                    "0" => Ok(Self::J0),
+                    "1/2" => Ok(Self::J1),
+                    "1" => Ok(Self::J2),
+                    "3/2" => Ok(Self::J3),
+                    "2" => Ok(Self::J4),
+                    "5/2" => Ok(Self::J5),
+                    "3" => Ok(Self::J6),
+                    "7/2" => Ok(Self::J7),
+                    "4" => Ok(Self::J8),
+                    "9/2" => Ok(Self::J9),
+                    "5" => Ok(Self::J10),
+                    "11/2" => Ok(Self::J11),
+                    "6" => Ok(Self::J12),
+                    "13/2" => Ok(Self::J13),
+                    "7" => Ok(Self::J14),
+                    "15/2" => Ok(Self::J15),
+                    "?" => Ok(Self::Unknown),
+                    other => Ok(Self::Custom(other.to_string())),
+                }
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Parity {
+    Plus,
+    Minus,
+    Unknown,
+}
+
+impl Display for Parity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Plus => "+",
+                Self::Minus => "-",
+                Self::Unknown => "Unknown",
+            }
+        )
+    }
+}
+
+impl FromSql for Parity {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value {
+            ValueRef::Text(bytes) => {
+                let s =
+                    std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
+                match s {
+                    "+" => Ok(Self::Plus),
+                    "-" => Ok(Self::Minus),
+                    "?" => Ok(Self::Unknown),
+                    _ => Err(FromSqlError::InvalidType),
+                }
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PdgParticle<'pdg> {
     pub(crate) db: &'pdg Pdg,
     pub pdg_id: PdgId,
     pub name: String,
-    pub cc_type: String,
+    pub particle_type: ParticleType,
     pub mcid: Option<isize>,
-    pub charge: f64,
-    pub quantum_i: Option<String>,
-    pub quantum_g: Option<String>,
-    pub quantum_j: Option<String>,
-    pub quantum_p: Option<String>,
-    pub quantum_c: Option<String>,
+    pub charge: Charge,
+    pub quantum_i: Option<Isospin>,
+    pub quantum_g: Option<Parity>,
+    pub quantum_j: Option<AngularMomentum>,
+    pub quantum_p: Option<Parity>,
+    pub quantum_c: Option<Parity>,
+}
+
+impl Display for PdgParticle<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({}, {}, charge {})",
+            self.name, self.pdg_id, self.particle_type, self.charge
+        )?;
+
+        if let Some(mcid) = self.mcid {
+            write!(f, ", MCID {mcid}")?;
+        }
+
+        let mut quantum_numbers = Vec::new();
+        if let Some(isospin) = &self.quantum_i {
+            quantum_numbers.push(format!("I={isospin}"));
+        }
+        if let Some(g_parity) = &self.quantum_g {
+            quantum_numbers.push(format!("G={g_parity}"));
+        }
+        if let Some(spin) = &self.quantum_j {
+            quantum_numbers.push(format!("J={spin}"));
+        }
+        if let Some(parity) = &self.quantum_p {
+            quantum_numbers.push(format!("P={parity}"));
+        }
+        if let Some(charge_conjugation) = &self.quantum_c {
+            quantum_numbers.push(format!("C={charge_conjugation}"));
+        }
+
+        if !quantum_numbers.is_empty() {
+            write!(f, ", {}", quantum_numbers.join(", "))?;
+        }
+
+        Ok(())
+    }
 }
 
 impl<'pdg> PdgParticle<'pdg> {
@@ -486,6 +796,57 @@ pub struct BranchingRatio {
 #[cfg(test)]
 mod tests {
     use crate::{BranchingFractionKind, LimitType, Pdg};
+
+    #[test]
+    fn displays_particle_identity_and_quantum_numbers() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+
+        assert_eq!(
+            pion.to_string(),
+            "pi+ (S008, Particle, charge +1), MCID 211, I=1, G=-, J=0, P=-"
+        );
+    }
+
+    #[test]
+    fn displays_self_conjugate_particles() {
+        let db = Pdg::open().unwrap();
+        let photon = db.particle("gamma").unwrap().unwrap();
+
+        assert_eq!(
+            photon.to_string(),
+            "gamma (S000, Self-Conjugate, charge 0), MCID 22, I=0 or 1, J=1, P=-, C=-"
+        );
+    }
+
+    #[test]
+    fn displays_fractional_charges() {
+        let db = Pdg::open().unwrap();
+
+        let down_quark = db.particle("d").unwrap().unwrap();
+        assert_eq!(
+            down_quark.to_string(),
+            "d (Q001, Particle, charge -1/3), MCID 1, I=1/2, J=1/2, P=+"
+        );
+
+        let up_quark = db.particle("u").unwrap().unwrap();
+        assert_eq!(
+            up_quark.to_string(),
+            "u (Q002, Particle, charge +2/3), MCID 2, I=1/2, J=1/2, P=+"
+        );
+
+        let antidown_quark = db.particle("dbar").unwrap().unwrap();
+        assert_eq!(
+            antidown_quark.to_string(),
+            "dbar (Q001, Antiparticle, charge +1/3), MCID -1, I=1/2, J=1/2, P=-"
+        );
+
+        let antiup_quark = db.particle("ubar").unwrap().unwrap();
+        assert_eq!(
+            antiup_quark.to_string(),
+            "ubar (Q002, Antiparticle, charge -2/3), MCID -2, I=1/2, J=1/2, P=-"
+        );
+    }
 
     #[test]
     fn lifetime_uses_lifetime_data_type() {

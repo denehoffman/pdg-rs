@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+num = { version = "0.4.3", optional = true }
 rusqlite = { version = "0.39.0", features = ["bundled", "serialize"] }
 thiserror = "2.0.18"
+
+[features]
+default = ["ratio"]
+num = ["dep:num"]
+ratio = ["num"]

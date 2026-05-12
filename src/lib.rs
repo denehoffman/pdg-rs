@@ -20,6 +20,8 @@ pub enum PdgError {
     ParseLimitType(String),
     #[error("Failed to parse DataType: {0}")]
     ParseDataType(String),
+    #[error(transparent)]
+    QuantumNumberConversion(#[from] QuantumNumberConversionError),
     #[error("Custom error: {0}")]
     Custom(String),
 }
@@ -50,7 +52,7 @@ impl Pdg {
                     db: self,
                     pdg_id: row.get(0)?,
                     name: row.get(1)?,
-                    cc_type: row.get(2)?,
+                    particle_type: row.get(2)?,
                     mcid: row.get(3)?,
                     charge: row.get(4)?,
                     quantum_i: row.get(5)?,
@@ -73,7 +75,7 @@ impl Pdg {
                     db: self,
                     pdg_id: row.get(0)?,
                     name: row.get(1)?,
-                    cc_type: row.get(2)?,
+                    particle_type: row.get(2)?,
                     mcid: row.get(3)?,
                     charge: row.get(4)?,
                     quantum_i: row.get(5)?,
@@ -95,7 +97,7 @@ impl Pdg {
                     db: self,
                     pdg_id: row.get(0)?,
                     name: row.get(1)?,
-                    cc_type: row.get(2)?,
+                    particle_type: row.get(2)?,
                     mcid: row.get(3)?,
                     charge: row.get(4)?,
                     quantum_i: row.get(5)?,
