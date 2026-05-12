@@ -152,9 +152,15 @@ impl Pdg {
         let mut value_stmt = self.conn.prepare(
             "SELECT column_name, value_text, unit_text, display_value_text, display_power_of_ten, display_in_percent, limit_type, used_in_average, used_in_fit, value, error_positive, error_negative, stat_error_positive, stat_error_negative, syst_error_positive, syst_error_negative, sort FROM pdgmeasurement_values WHERE pdgmeasurement_id = ?1 ORDER BY sort",
         )?;
+        let mut footnote_stmt = self.conn.prepare(
+            "SELECT pdgfootnote.pdgid, footnote_index, text, changebar FROM pdgmeasurement_footnote JOIN pdgfootnote ON pdgfootnote.id = pdgmeasurement_footnote.pdgfootnote_id WHERE pdgmeasurement_id = ?1 ORDER BY footnote_index",
+        )?;
         for measurement in &mut measurements {
             measurement.values = value_stmt
                 .query_map([measurement.id], |row| PdgMeasurementValue::try_from(row))?
+                .collect::<Result<Vec<_>, _>>()?;
+            measurement.footnotes = footnote_stmt
+                .query_map([measurement.id], |row| PdgFootnote::try_from(row))?
                 .collect::<Result<Vec<_>, _>>()?;
         }
 

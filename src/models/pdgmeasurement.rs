@@ -1,6 +1,6 @@
 use rusqlite::Row;
 
-use crate::{LimitType, PdgId};
+use crate::{LimitType, PdgFootnote, PdgId};
 
 #[derive(Clone, Debug)]
 pub struct PdgReference {
@@ -25,6 +25,7 @@ pub struct PdgMeasurement {
     pub comment: Option<String>,
     pub sort: isize,
     pub values: Vec<PdgMeasurementValue>,
+    pub footnotes: Vec<PdgFootnote>,
     pub(crate) id: isize,
 }
 
@@ -52,6 +53,7 @@ impl TryFrom<&Row<'_>> for PdgMeasurement {
                 title: row.get(15)?,
             },
             values: Vec::new(),
+            footnotes: Vec::new(),
         })
     }
 }

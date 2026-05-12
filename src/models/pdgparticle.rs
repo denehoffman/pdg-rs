@@ -1056,6 +1056,7 @@ mod tests {
         let measurements = db.measurements_for("S008M").unwrap();
         let first = measurements.first().unwrap();
         let first_value = first.values.first().unwrap();
+        let first_footnote = first.footnotes.first().unwrap();
 
         assert_eq!(first.pdg_id, "S008M");
         assert_eq!(first.reference.document_id.trim(), "DAUM 2019");
@@ -1080,6 +1081,10 @@ mod tests {
         assert_eq!(first_value.unit_text.as_deref(), Some("MeV"));
         assert!(first_value.used_in_average);
         assert!(first_value.used_in_fit);
+        assert_eq!(first_footnote.pdg_id.as_deref(), Some("S008M"));
+        assert_eq!(first_footnote.index, Some(1));
+        assert!(first_footnote.text.as_ref().unwrap().contains("DAUM 2019"));
+        assert!(!first_footnote.changebar);
     }
 
     #[test]
