@@ -14,7 +14,7 @@ use crate::{
     PdgMeasurement, PdgResult, PdgText,
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ParticleType {
     Particle,
     Antiparticle,
@@ -32,6 +32,16 @@ impl Display for ParticleType {
                 Self::SelfConjugate => "Self-Conjugate",
             }
         )
+    }
+}
+
+impl ParticleType {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Particle => "P",
+            Self::Antiparticle => "A",
+            Self::SelfConjugate => "S",
+        }
     }
 }
 
@@ -110,7 +120,7 @@ impl FromSql for ParticleClass {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Charge {
     PlusPlus,
     Plus,
@@ -153,6 +163,20 @@ impl FromSql for Charge {
 }
 
 impl Charge {
+    pub(crate) fn as_f64(self) -> f64 {
+        match self {
+            Self::PlusPlus => 2.0,
+            Self::Plus => 1.0,
+            Self::Neutral => 0.0,
+            Self::Minus => -1.0,
+            Self::MinusMinus => -2.0,
+            Self::PlusOneThird => 1.0 / 3.0,
+            Self::PlusTwoThirds => 2.0 / 3.0,
+            Self::MinusOneThird => -1.0 / 3.0,
+            Self::MinusTwoThirds => -2.0 / 3.0,
+        }
+    }
+
     fn from_f64(value: f64) -> Option<Self> {
         const EPSILON: f64 = 1e-12;
         [
@@ -171,7 +195,7 @@ impl Charge {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Isospin {
     I0,
     I1,
@@ -302,7 +326,7 @@ impl FromSql for AngularMomentum {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Parity {
     Plus,
     Minus,
@@ -1006,8 +1030,8 @@ pub struct BranchingRatio {
 #[cfg(test)]
 mod tests {
     use crate::{
-        AngularMomentum, BranchingFractionKind, DataType, LimitType, ParticleClass, ParticleSearch,
-        Pdg, PdgItemType,
+        AngularMomentum, BranchingFractionKind, Charge, DataType, Isospin, LimitType, Parity,
+        ParticleClass, ParticleSearch, ParticleType, Pdg, PdgItemType,
     };
 
     #[test]
@@ -1149,6 +1173,60 @@ mod tests {
     }
 
     #[test]
+    fn searches_by_particle_type_charge_and_quantum_numbers() {
+        let db = Pdg::open().unwrap();
+        let scalar_neutral_mesons = db
+            .search_particles(
+                ParticleSearch::new()
+                    .class(ParticleClass::Meson)
+                    .particle_type(ParticleType::SelfConjugate)
+                    .charge(Charge::Neutral)
+                    .isospin(Isospin::I0)
+                    .g_parity(Parity::Plus)
+                    .angular_momentum(AngularMomentum::J0)
+                    .parity(Parity::Plus)
+                    .charge_conjugation(Parity::Plus),
+            )
+            .unwrap();
+
+        assert!(
+            scalar_neutral_mesons
+                .iter()
+                .any(|particle| particle.name == "f_0(980)0")
+        );
+        assert!(scalar_neutral_mesons.iter().all(|particle| {
+            particle.particle_class == ParticleClass::Meson
+                && particle.particle_type == ParticleType::SelfConjugate
+                && particle.charge == Charge::Neutral
+                && particle.quantum_i == Some(Isospin::I0)
+                && particle.quantum_g == Some(Parity::Plus)
+                && particle.quantum_j == Some(AngularMomentum::J0)
+                && particle.quantum_p == Some(Parity::Plus)
+                && particle.quantum_c == Some(Parity::Plus)
+        }));
+    }
+
+    #[test]
+    fn searches_for_missing_optional_quantum_numbers() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(
+                ParticleSearch::new()
+                    .name_contains("p")
+                    .g_parity(None)
+                    .charge_conjugation(None),
+            )
+            .unwrap();
+
+        assert!(particles.iter().any(|particle| particle.name == "p"));
+        assert!(
+            particles
+                .iter()
+                .all(|particle| particle.quantum_g.is_none() && particle.quantum_c.is_none())
+        );
+    }
+
+    #[test]
     fn searches_by_normalized_mass_range() {
         let db = Pdg::open().unwrap();
         let light_mesons = db
@@ -1165,20 +1243,57 @@ mod tests {
     }
 
     #[test]
+    fn searches_by_ambiguous_width_range() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(ParticleSearch::new().width_range_mev(0.0, 50.0))
+            .unwrap();
+
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "f_0(980)0")
+        );
+        assert!(
+            !particles
+                .iter()
+                .any(|particle| particle.name == "D_1(2430)0")
+        );
+        assert!(particles.iter().any(|particle| particle.name == "e-"));
+    }
+
+    #[test]
+    fn searches_by_lifetime_range() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(ParticleSearch::new().lifetime_range_seconds(1e-8, 1e-7))
+            .unwrap();
+
+        assert!(particles.iter().any(|particle| particle.name == "pi+"));
+        assert!(!particles.iter().any(|particle| particle.name == "p"));
+    }
+
+    #[test]
     fn searches_by_decay_final_states() {
         let db = Pdg::open().unwrap();
         let sigma_modes = db
             .search_particles(
                 ParticleSearch::new()
                     .class(ParticleClass::Baryon)
-                    .decays_to(["N", "Kbar"]),
+                    .decays_to(["p", "K-"])
+                    .mass_range_mev(0.0, 2000.0),
             )
             .unwrap();
 
         assert!(
             sigma_modes
                 .iter()
-                .any(|particle| particle.name.starts_with("Sigma(2010)"))
+                .any(|particle| particle.name == "Lambda(1520)0")
+        );
+        assert!(
+            sigma_modes
+                .iter()
+                .any(|particle| particle.name == "Sigma(1385)0")
         );
     }
 

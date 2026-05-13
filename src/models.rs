@@ -10,6 +10,7 @@ pub use pdgparticle::{
 
 mod pdgsearch;
 pub use pdgsearch::ParticleSearch;
+pub(crate) use pdgsearch::QuantumFilter;
 
 mod pdgdata;
 pub use pdgdata::DataEntry;

@@ -1,13 +1,34 @@
-use crate::{AngularMomentum, ParticleClass};
+use crate::{AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleType};
 
 #[derive(Clone, Debug, Default)]
 pub struct ParticleSearch {
     pub(crate) name_contains: Option<String>,
     pub(crate) particle_class: Option<ParticleClass>,
-    pub(crate) angular_momentum: Option<AngularMomentum>,
+    pub(crate) particle_type: Option<ParticleType>,
+    pub(crate) charge: Option<Charge>,
+    pub(crate) isospin: QuantumFilter<Isospin>,
+    pub(crate) g_parity: QuantumFilter<Parity>,
+    pub(crate) angular_momentum: QuantumFilter<AngularMomentum>,
+    pub(crate) parity: QuantumFilter<Parity>,
+    pub(crate) charge_conjugation: QuantumFilter<Parity>,
     pub(crate) mass_range_mev: Option<(f64, f64)>,
+    pub(crate) width_range_mev: Option<(f64, f64)>,
+    pub(crate) lifetime_range_seconds: Option<(f64, f64)>,
     pub(crate) decays_to: Vec<String>,
     pub(crate) decays_from: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum QuantumFilter<T> {
+    Any,
+    Missing,
+    Value(T),
+}
+
+impl<T> Default for QuantumFilter<T> {
+    fn default() -> Self {
+        Self::Any
+    }
 }
 
 impl ParticleSearch {
@@ -25,13 +46,56 @@ impl ParticleSearch {
         self
     }
 
-    pub fn angular_momentum(mut self, angular_momentum: AngularMomentum) -> Self {
-        self.angular_momentum = Some(angular_momentum);
+    pub fn particle_type(mut self, particle_type: ParticleType) -> Self {
+        self.particle_type = Some(particle_type);
+        self
+    }
+
+    pub fn charge(mut self, charge: Charge) -> Self {
+        self.charge = Some(charge);
+        self
+    }
+
+    pub fn isospin(mut self, isospin: impl Into<Option<Isospin>>) -> Self {
+        self.isospin = quantum_filter(isospin);
+        self
+    }
+
+    pub fn g_parity(mut self, g_parity: impl Into<Option<Parity>>) -> Self {
+        self.g_parity = quantum_filter(g_parity);
+        self
+    }
+
+    pub fn angular_momentum(
+        mut self,
+        angular_momentum: impl Into<Option<AngularMomentum>>,
+    ) -> Self {
+        self.angular_momentum = quantum_filter(angular_momentum);
+        self
+    }
+
+    pub fn parity(mut self, parity: impl Into<Option<Parity>>) -> Self {
+        self.parity = quantum_filter(parity);
+        self
+    }
+
+    pub fn charge_conjugation(mut self, charge_conjugation: impl Into<Option<Parity>>) -> Self {
+        self.charge_conjugation = quantum_filter(charge_conjugation);
         self
     }
 
     pub fn mass_range_mev(mut self, min: f64, max: f64) -> Self {
         self.mass_range_mev = Some((min, max));
+        self
+    }
+
+    pub fn width_range_mev(mut self, min: f64, max: f64) -> Self {
+        self.width_range_mev = Some((min, max));
+        self
+    }
+
+    pub fn lifetime_range_seconds(mut self, min: f64, max: f64) -> Self {
+        self.lifetime_range_seconds = Some((min, max));
         self
     }
 
@@ -51,5 +115,12 @@ impl ParticleSearch {
     {
         self.decays_from = states.into_iter().map(Into::into).collect();
         self
+    }
+}
+
+fn quantum_filter<T>(filter: impl Into<Option<T>>) -> QuantumFilter<T> {
+    match filter.into() {
+        Some(value) => QuantumFilter::Value(value),
+        None => QuantumFilter::Missing,
     }
 }

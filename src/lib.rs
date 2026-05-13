@@ -127,6 +127,9 @@ impl Pdg {
             Self::PARTICLE_JOIN
         );
         let mut params = Vec::new();
+        let mass_range = query.mass_range_mev;
+        let width_range = query.width_range_mev;
+        let lifetime_range = query.lifetime_range_seconds;
 
         if let Some(name_contains) = query.name_contains {
             sql.push_str(" AND name LIKE '%' || ? || '%'");
@@ -138,57 +141,76 @@ impl Pdg {
             params.push(Value::Text(particle_class.flag().to_string()));
         }
 
-        if let Some(angular_momentum) = query.angular_momentum {
-            sql.push_str(" AND quantum_j = ?");
-            params.push(Value::Text(angular_momentum.to_string()));
+        if let Some(particle_type) = query.particle_type {
+            sql.push_str(" AND cc_type = ?");
+            params.push(Value::Text(particle_type.code().to_string()));
         }
 
-        if let Some((min, max)) = query.mass_range_mev {
-            sql.push_str(
-                " AND pdgparticle.pdgid IN (
-                    SELECT mass_pdgid.parent_pdgid
-                    FROM pdgid mass_pdgid
-                    JOIN pdgdata mass_data ON mass_data.pdgid_id = mass_pdgid.id
-                    WHERE mass_pdgid.data_type = 'M'
-                        AND mass_data.edition = ?
-                        AND mass_data.value IS NOT NULL
-                        AND CASE mass_data.unit_text
-                            WHEN 'MeV' THEN mass_data.value
-                            WHEN 'GeV' THEN mass_data.value * 1000.0
-                            WHEN 'eV' THEN mass_data.value / 1000000.0
-                            WHEN 'u' THEN mass_data.value * 931.49410242
-                        END BETWEEN ? AND ?
-                        AND (
-                            mass_data.in_summary_table = 1
-                            OR NOT EXISTS (
-                                SELECT 1
-                                FROM pdgid summary_pdgid
-                                JOIN pdgdata summary_data ON summary_data.pdgid_id = summary_pdgid.id
-                                WHERE summary_pdgid.parent_pdgid = mass_pdgid.parent_pdgid
-                                    AND summary_pdgid.data_type = 'M'
-                                    AND summary_data.edition = ?
-                                    AND summary_data.value IS NOT NULL
-                                    AND summary_data.in_summary_table = 1
-                            )
-                        )
-                )",
-            );
-            params.push(Value::Text(LATEST_EDITION.to_string()));
-            params.push(Value::Real(min));
-            params.push(Value::Real(max));
-            params.push(Value::Text(LATEST_EDITION.to_string()));
+        if let Some(charge) = query.charge {
+            sql.push_str(" AND ABS(charge - ?) < 1e-12");
+            params.push(Value::Real(charge.as_f64()));
         }
+
+        Self::push_quantum_filter(&mut sql, &mut params, "quantum_i", query.isospin);
+        Self::push_quantum_filter(&mut sql, &mut params, "quantum_g", query.g_parity);
+        Self::push_quantum_filter(&mut sql, &mut params, "quantum_j", query.angular_momentum);
+        Self::push_quantum_filter(&mut sql, &mut params, "quantum_p", query.parity);
+        Self::push_quantum_filter(&mut sql, &mut params, "quantum_c", query.charge_conjugation);
 
         self.push_decay_filters(&mut sql, &mut params, query.decays_to, true)?;
         self.push_decay_filters(&mut sql, &mut params, query.decays_from, false)?;
 
         sql.push_str(" ORDER BY pdgparticle.pdgid, name");
         let mut stmt = self.conn.prepare(&sql)?;
-        Ok(stmt
+        let particles = stmt
             .query_map(params_from_iter(params), |row| {
                 PdgParticle::from_row(self, row)
             })?
-            .collect::<Result<Vec<_>, _>>()?)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mass_entries = if mass_range.is_some() {
+            Some(self.data_entries_by_parent(DataType::Mass)?)
+        } else {
+            None
+        };
+        let width_entries = if width_range.is_some() {
+            Some(self.data_entries_by_parent(DataType::FullWidth)?)
+        } else {
+            None
+        };
+        let lifetime_entries = if lifetime_range.is_some() {
+            Some(self.data_entries_by_parent(DataType::Lifetime)?)
+        } else {
+            None
+        };
+
+        Ok(particles
+            .into_iter()
+            .filter(|particle| {
+                matches_data_range(
+                    mass_entries.as_ref(),
+                    &particle.pdg_id,
+                    mass_range,
+                    Unit::Mev,
+                )
+            })
+            .filter(|particle| {
+                matches_data_range(
+                    width_entries.as_ref(),
+                    &particle.pdg_id,
+                    width_range,
+                    Unit::Mev,
+                )
+            })
+            .filter(|particle| {
+                matches_data_range(
+                    lifetime_entries.as_ref(),
+                    &particle.pdg_id,
+                    lifetime_range,
+                    Unit::Seconds,
+                )
+            })
+            .collect::<Vec<_>>())
     }
 
     pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem>> {
@@ -326,20 +348,284 @@ impl Pdg {
         Ok(())
     }
 
+    fn push_quantum_filter<T: ToString>(
+        sql: &mut String,
+        params: &mut Vec<Value>,
+        column: &str,
+        filter: QuantumFilter<T>,
+    ) {
+        match filter {
+            QuantumFilter::Any => {}
+            QuantumFilter::Missing => {
+                sql.push_str(&format!(" AND {column} IS NULL"));
+            }
+            QuantumFilter::Value(value) => {
+                sql.push_str(&format!(" AND {column} = ?"));
+                params.push(Value::Text(value.to_string()));
+            }
+        }
+    }
+
     fn expand_decay_state_names(&self, name: String) -> PdgResult<Vec<String>> {
         let mut names = vec![name.clone()];
         let mut seen = std::collections::HashSet::from([name.clone()]);
+        let mut parents = Vec::new();
+
         let mut stmt = self.conn.prepare(
-            "SELECT child.name FROM pdgitem_map JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id JOIN pdgitem child ON child.id = pdgitem_map.target_id WHERE parent.name = ?1 ORDER BY pdgitem_map.sort",
+            "SELECT child.name, 0 AS is_parent, pdgitem_map.sort
+            FROM pdgitem_map
+            JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id
+            JOIN pdgitem child ON child.id = pdgitem_map.target_id
+            WHERE parent.name = ?1
+            UNION ALL
+            SELECT parent.name, 1 AS is_parent, pdgitem_map.sort
+            FROM pdgitem_map
+            JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id
+            JOIN pdgitem child ON child.id = pdgitem_map.target_id
+            WHERE child.name = ?1
+            ORDER BY is_parent, sort",
         )?;
-        for child in stmt
-            .query_map([&name], |row| row.get::<_, String>(0))?
+        for (relative, is_parent) in stmt
+            .query_map([&name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?
         {
-            if seen.insert(child.clone()) {
-                names.push(child);
+            if is_parent {
+                parents.push(relative.clone());
+            }
+            if seen.insert(relative.clone()) {
+                names.push(relative);
             }
         }
+
+        if self.is_antiparticle_item(&name)? {
+            for parent in parents {
+                let alias = format!("{parent}bar");
+                if self.decay_state_exists(&alias)? && seen.insert(alias.clone()) {
+                    names.push(alias);
+                }
+            }
+        }
+
         Ok(names)
+    }
+
+    fn is_antiparticle_item(&self, name: &str) -> PdgResult<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM pdgparticle WHERE name = ?1 AND cc_type = 'A'",
+                [name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn decay_state_exists(&self, name: &str) -> PdgResult<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1
+                WHERE EXISTS (SELECT 1 FROM pdgitem WHERE name = ?1)
+                    OR EXISTS (SELECT 1 FROM pdgdecay WHERE name = ?1)",
+                [name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn data_entries_by_parent(
+        &self,
+        data_type: DataType,
+    ) -> PdgResult<std::collections::HashMap<PdgId, Vec<DataEntry>>> {
+        let data_type = data_type.to_string();
+        let sql = format!(
+            "SELECT {}, pdgid.parent_pdgid FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgdata.edition = ?2",
+            DataEntry::COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([&data_type, LATEST_EDITION], |row| {
+                Ok((
+                    row.get::<_, PdgId>(DataEntry::COLUMN_COUNT)?,
+                    DataEntry::try_from(row)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut grouped =
+            std::collections::HashMap::<PdgId, (Vec<DataEntry>, Vec<DataEntry>)>::new();
+        for (parent_pdgid, entry) in rows {
+            let (all_entries, summary_entries) = grouped.entry(parent_pdgid).or_default();
+            all_entries.push(entry.clone());
+            if entry.in_summary_table {
+                summary_entries.push(entry);
+            }
+        }
+
+        Ok(grouped
+            .into_iter()
+            .map(|(pdg_id, (all_entries, summary_entries))| {
+                let entries = if summary_entries.is_empty() {
+                    all_entries
+                } else {
+                    summary_entries
+                };
+                (pdg_id, entries)
+            })
+            .collect())
+    }
+}
+
+#[derive(Copy, Clone)]
+enum Unit {
+    Mev,
+    Seconds,
+}
+
+#[derive(Copy, Clone)]
+struct Interval {
+    min: f64,
+    max: f64,
+}
+
+impl Interval {
+    fn overlaps(self, min: f64, max: f64) -> bool {
+        self.min <= max && self.max >= min
+    }
+}
+
+fn matches_data_range(
+    entries_by_parent: Option<&std::collections::HashMap<PdgId, Vec<DataEntry>>>,
+    pdg_id: &str,
+    range: Option<(f64, f64)>,
+    unit: Unit,
+) -> bool {
+    let Some((min, max)) = range else {
+        return true;
+    };
+    let Some(entries) = entries_by_parent.and_then(|entries| entries.get(pdg_id)) else {
+        return true;
+    };
+    if entries.is_empty() {
+        return true;
+    }
+
+    entries
+        .iter()
+        .any(|entry| match data_interval(entry, unit) {
+            Some(interval) => interval.overlaps(min, max),
+            None => true,
+        })
+}
+
+fn data_interval(entry: &DataEntry, unit: Unit) -> Option<Interval> {
+    let factor = unit_factor(&entry.unit_text, unit)?;
+
+    if entry.limit_type == Some(LimitType::Range) {
+        return parse_interval(entry).map(|interval| Interval {
+            min: interval.min * factor,
+            max: interval.max * factor,
+        });
+    }
+
+    let value = entry.value?;
+    let value = value * factor;
+    match entry.limit_type {
+        Some(LimitType::UpperLimit) => Some(Interval {
+            min: f64::NEG_INFINITY,
+            max: value,
+        }),
+        Some(LimitType::LowerLimit) => Some(Interval {
+            min: value,
+            max: f64::INFINITY,
+        }),
+        Some(LimitType::RangeExclusion) => None,
+        Some(LimitType::Range) => unreachable!(),
+        None => {
+            let error_positive = entry.error_positive.unwrap_or(0.0) * factor;
+            let error_negative = entry.error_negative.unwrap_or(0.0) * factor;
+            Some(Interval {
+                min: value - error_negative,
+                max: value + error_positive,
+            })
+        }
+    }
+}
+
+fn parse_interval(entry: &DataEntry) -> Option<Interval> {
+    let text = entry
+        .value_text
+        .as_deref()
+        .unwrap_or(entry.display_value_text.as_str());
+    let values = parse_numbers(text);
+    let min = values.iter().copied().reduce(f64::min)?;
+    let max = values.iter().copied().reduce(f64::max)?;
+    Some(Interval { min, max })
+}
+
+fn parse_numbers(text: &str) -> Vec<f64> {
+    let chars = text.char_indices().collect::<Vec<_>>();
+    let mut numbers = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let (start, ch) = chars[index];
+        let next = chars.get(index + 1).map(|(_, ch)| *ch);
+        let starts_number = ch.is_ascii_digit()
+            || (ch == '.' && next.is_some_and(|ch| ch.is_ascii_digit()))
+            || ((ch == '+' || ch == '-')
+                && next.is_some_and(|ch| ch.is_ascii_digit() || ch == '.'));
+        if !starts_number {
+            index += 1;
+            continue;
+        }
+
+        let mut end_index = index + 1;
+        let mut previous = ch;
+        while end_index < chars.len() {
+            let (_, current) = chars[end_index];
+            if current.is_ascii_digit()
+                || current == '.'
+                || current == 'e'
+                || current == 'E'
+                || ((current == '+' || current == '-') && (previous == 'e' || previous == 'E'))
+            {
+                previous = current;
+                end_index += 1;
+            } else {
+                break;
+            }
+        }
+
+        let end = chars
+            .get(end_index)
+            .map(|(char_index, _)| *char_index)
+            .unwrap_or(text.len());
+        if let Ok(value) = text[start..end].parse::<f64>() {
+            numbers.push(value);
+        }
+        index = end_index;
+    }
+    numbers
+}
+
+fn unit_factor(unit_text: &str, unit: Unit) -> Option<f64> {
+    match unit {
+        Unit::Mev => match unit_text {
+            "MeV" => Some(1.0),
+            "GeV" => Some(1000.0),
+            "keV" => Some(0.001),
+            "eV" => Some(0.000001),
+            "u" => Some(931.49410242),
+            _ => None,
+        },
+        Unit::Seconds => match unit_text {
+            "s" => Some(1.0),
+            "yr" | "years" => Some(31_557_600.0),
+            _ => None,
+        },
     }
 }
