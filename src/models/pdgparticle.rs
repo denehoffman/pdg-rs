@@ -1364,6 +1364,73 @@ mod tests {
     }
 
     #[test]
+    fn neutral_kaon_exact_decay_search_includes_kaon_family_modes() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .class(ParticleClass::Meson)
+                    .decays_to(["K(S)0", "K(S)0"]),
+            )
+            .unwrap();
+
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "f_0(980)0")
+        );
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "a_0(980)0")
+        );
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "f_2^'(1525)0")
+        );
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "a_2(1320)0")
+        );
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "a_0(1710)0")
+        );
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "f_2(1910)0")
+        );
+    }
+
+    #[test]
+    fn literal_neutral_kaon_exact_decay_search_does_not_expand_family_modes() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .class(ParticleClass::Meson)
+                    .decays_to(["K(S)0", "K(S)0"])
+                    .decay_state_expansion(DecayStateExpansion::Literal),
+            )
+            .unwrap();
+
+        assert!(
+            !particles
+                .iter()
+                .any(|particle| particle.name == "f_0(980)0")
+        );
+        assert!(
+            !particles
+                .iter()
+                .any(|particle| particle.name == "a_0(980)0")
+        );
+    }
+
+    #[test]
     fn loads_items_by_name() {
         let db = Pdg::open().unwrap();
         let pion_pair = db.item("pi+-").unwrap().unwrap();

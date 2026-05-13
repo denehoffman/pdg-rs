@@ -474,7 +474,7 @@ impl Pdg {
             }
         }
 
-        if self.is_antiparticle_item(&name)? {
+        if self.is_antiparticle_item(&name)? || self.is_neutral_meson_particle(&name)? {
             for parent in parents {
                 let alias = format!("{parent}bar");
                 if self.decay_state_exists(&alias)? && seen.insert(alias.clone()) {
@@ -491,6 +491,23 @@ impl Pdg {
             .conn
             .query_row(
                 "SELECT 1 FROM pdgparticle WHERE name = ?1 AND cc_type = 'A'",
+                [name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn is_neutral_meson_particle(&self, name: &str) -> PdgResult<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1
+                FROM pdgparticle
+                JOIN pdgid ON pdgid.pdgid = pdgparticle.pdgid AND pdgid.data_type = 'PART'
+                WHERE pdgparticle.name = ?1
+                    AND ABS(pdgparticle.charge) < 1e-12
+                    AND pdgid.flags = 'M'",
                 [name],
                 |_| Ok(()),
             )
@@ -736,5 +753,22 @@ fn unit_factor(unit_text: &str, unit: Unit) -> Option<f64> {
             "yr" | "years" => Some(31_557_600.0),
             _ => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn charged_decay_states_do_not_expand_to_antiparticle_siblings() {
+        let db = Pdg::open().unwrap();
+        let names = db
+            .expand_decay_state_names("pi+".to_string(), DecayStateExpansion::Inclusive)
+            .unwrap();
+
+        assert!(names.contains(&"pi+".to_string()));
+        assert!(names.contains(&"pi".to_string()));
+        assert!(!names.contains(&"pi-".to_string()));
     }
 }
