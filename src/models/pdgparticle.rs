@@ -1030,8 +1030,8 @@ pub struct BranchingRatio {
 #[cfg(test)]
 mod tests {
     use crate::{
-        AngularMomentum, BranchingFractionKind, Charge, DataType, Isospin, LimitType, Parity,
-        ParticleClass, ParticleSearch, ParticleType, Pdg, PdgItemType,
+        AngularMomentum, BranchingFractionKind, Charge, DataType, DecayStateExpansion, Isospin,
+        LimitType, Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg, PdgItemType,
     };
 
     #[test]
@@ -1159,7 +1159,7 @@ mod tests {
         let db = Pdg::open().unwrap();
         let vector_mesons = db
             .search_particles(
-                ParticleSearch::new()
+                ParticleSearchQuery::new()
                     .class(ParticleClass::Meson)
                     .angular_momentum(AngularMomentum::J2),
             )
@@ -1177,7 +1177,7 @@ mod tests {
         let db = Pdg::open().unwrap();
         let scalar_neutral_mesons = db
             .search_particles(
-                ParticleSearch::new()
+                ParticleSearchQuery::new()
                     .class(ParticleClass::Meson)
                     .particle_type(ParticleType::SelfConjugate)
                     .charge(Charge::Neutral)
@@ -1211,7 +1211,7 @@ mod tests {
         let db = Pdg::open().unwrap();
         let particles = db
             .search_particles(
-                ParticleSearch::new()
+                ParticleSearchQuery::new()
                     .name_contains("p")
                     .g_parity(None)
                     .charge_conjugation(None),
@@ -1231,7 +1231,7 @@ mod tests {
         let db = Pdg::open().unwrap();
         let light_mesons = db
             .search_particles(
-                ParticleSearch::new()
+                ParticleSearchQuery::new()
                     .class(ParticleClass::Meson)
                     .mass_range_mev(100.0, 150.0),
             )
@@ -1246,7 +1246,7 @@ mod tests {
     fn searches_by_ambiguous_width_range() {
         let db = Pdg::open().unwrap();
         let particles = db
-            .search_particles(ParticleSearch::new().width_range_mev(0.0, 50.0))
+            .search_particles(ParticleSearchQuery::new().width_range_mev(0.0, 50.0))
             .unwrap();
 
         assert!(
@@ -1266,7 +1266,7 @@ mod tests {
     fn searches_by_lifetime_range() {
         let db = Pdg::open().unwrap();
         let particles = db
-            .search_particles(ParticleSearch::new().lifetime_range_seconds(1e-8, 1e-7))
+            .search_particles(ParticleSearchQuery::new().lifetime_range_seconds(1e-8, 1e-7))
             .unwrap();
 
         assert!(particles.iter().any(|particle| particle.name == "pi+"));
@@ -1278,7 +1278,7 @@ mod tests {
         let db = Pdg::open().unwrap();
         let sigma_modes = db
             .search_particles(
-                ParticleSearch::new()
+                ParticleSearchQuery::new()
                     .class(ParticleClass::Baryon)
                     .decays_to(["p", "K-"])
                     .mass_range_mev(0.0, 2000.0),
@@ -1295,6 +1295,44 @@ mod tests {
                 .iter()
                 .any(|particle| particle.name == "Sigma(1385)0")
         );
+        assert!(
+            !sigma_modes
+                .iter()
+                .any(|particle| particle.name == "Xi_b()-")
+        );
+    }
+
+    #[test]
+    fn decay_contains_allows_extra_final_states() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .class(ParticleClass::Baryon)
+                    .decay_contains(["p", "K-"]),
+            )
+            .unwrap();
+
+        assert!(particles.iter().any(|particle| particle.name == "Xi_b()-"));
+    }
+
+    #[test]
+    fn literal_exact_decay_search_does_not_expand_state_names() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .class(ParticleClass::Baryon)
+                    .decays_to(["p", "K-"])
+                    .decay_state_expansion(DecayStateExpansion::Literal),
+            )
+            .unwrap();
+
+        assert!(
+            !particles
+                .iter()
+                .any(|particle| particle.name == "Lambda(1520)0")
+        );
     }
 
     #[test]
@@ -1302,7 +1340,7 @@ mod tests {
         let db = Pdg::open().unwrap();
         let pion_modes = db
             .search_particles(
-                ParticleSearch::new()
+                ParticleSearchQuery::new()
                     .decays_from(["pi+"])
                     .decays_to(["mu+", "nu_mu"]),
             )
@@ -1315,7 +1353,11 @@ mod tests {
     fn searches_decay_states_using_item_expansion() {
         let db = Pdg::open().unwrap();
         let kaon_modes = db
-            .search_particles(ParticleSearch::new().decays_from(["K+"]).decays_to(["pi"]))
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .decays_from(["K+"])
+                    .decay_contains(["pi"]),
+            )
             .unwrap();
 
         assert!(kaon_modes.iter().any(|particle| particle.name == "K+"));

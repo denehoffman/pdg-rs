@@ -9,8 +9,8 @@ pub use pdgparticle::{
 };
 
 mod pdgsearch;
-pub use pdgsearch::ParticleSearch;
 pub(crate) use pdgsearch::QuantumFilter;
+pub use pdgsearch::{DecayMatchMode, DecayStateExpansion, ParticleSearchQuery};
 
 mod pdgdata;
 pub use pdgdata::DataEntry;

@@ -1,7 +1,7 @@
 use crate::{AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleType};
 
 #[derive(Clone, Debug, Default)]
-pub struct ParticleSearch {
+pub struct ParticleSearchQuery {
     pub(crate) name_contains: Option<String>,
     pub(crate) particle_class: Option<ParticleClass>,
     pub(crate) particle_type: Option<ParticleType>,
@@ -14,8 +14,29 @@ pub struct ParticleSearch {
     pub(crate) mass_range_mev: Option<(f64, f64)>,
     pub(crate) width_range_mev: Option<(f64, f64)>,
     pub(crate) lifetime_range_seconds: Option<(f64, f64)>,
-    pub(crate) decays_to: Vec<String>,
+    pub(crate) decays_to: DecayFilter,
     pub(crate) decays_from: Vec<String>,
+    pub(crate) decay_state_expansion: DecayStateExpansion,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DecayFilter {
+    pub(crate) states: Vec<String>,
+    pub(crate) mode: DecayMatchMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecayMatchMode {
+    #[default]
+    Exact,
+    Contains,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecayStateExpansion {
+    #[default]
+    Inclusive,
+    Literal,
 }
 
 #[derive(Clone, Debug)]
@@ -31,7 +52,7 @@ impl<T> Default for QuantumFilter<T> {
     }
 }
 
-impl ParticleSearch {
+impl ParticleSearchQuery {
     pub fn new() -> Self {
         Self::default()
     }
@@ -104,7 +125,22 @@ impl ParticleSearch {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.decays_to = states.into_iter().map(Into::into).collect();
+        self.decays_to = DecayFilter {
+            states: states.into_iter().map(Into::into).collect(),
+            mode: DecayMatchMode::Exact,
+        };
+        self
+    }
+
+    pub fn decay_contains<I, S>(mut self, states: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.decays_to = DecayFilter {
+            states: states.into_iter().map(Into::into).collect(),
+            mode: DecayMatchMode::Contains,
+        };
         self
     }
 
@@ -114,6 +150,11 @@ impl ParticleSearch {
         S: Into<String>,
     {
         self.decays_from = states.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn decay_state_expansion(mut self, expansion: DecayStateExpansion) -> Self {
+        self.decay_state_expansion = expansion;
         self
     }
 }

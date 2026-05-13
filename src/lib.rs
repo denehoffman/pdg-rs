@@ -120,7 +120,7 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn search_particles(&self, query: ParticleSearch) -> PdgResult<Vec<PdgParticle<'_>>> {
+    pub fn search_particles(&self, query: ParticleSearchQuery) -> PdgResult<Vec<PdgParticle<'_>>> {
         let mut sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE 1 = 1",
             Self::PARTICLE_COLUMNS,
@@ -130,6 +130,9 @@ impl Pdg {
         let mass_range = query.mass_range_mev;
         let width_range = query.width_range_mev;
         let lifetime_range = query.lifetime_range_seconds;
+        let decays_to = query.decays_to.clone();
+        let decays_from = query.decays_from.clone();
+        let decay_state_expansion = query.decay_state_expansion;
 
         if let Some(name_contains) = query.name_contains {
             sql.push_str(" AND name LIKE '%' || ? || '%'");
@@ -157,8 +160,20 @@ impl Pdg {
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_p", query.parity);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_c", query.charge_conjugation);
 
-        self.push_decay_filters(&mut sql, &mut params, query.decays_to, true)?;
-        self.push_decay_filters(&mut sql, &mut params, query.decays_from, false)?;
+        self.push_decay_filters(
+            &mut sql,
+            &mut params,
+            decays_to.states.clone(),
+            true,
+            decay_state_expansion,
+        )?;
+        self.push_decay_filters(
+            &mut sql,
+            &mut params,
+            decays_from,
+            false,
+            decay_state_expansion,
+        )?;
 
         sql.push_str(" ORDER BY pdgparticle.pdgid, name");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -184,33 +199,42 @@ impl Pdg {
             None
         };
 
-        Ok(particles
-            .into_iter()
-            .filter(|particle| {
-                matches_data_range(
-                    mass_entries.as_ref(),
+        let mut filtered_particles = Vec::new();
+        for particle in particles {
+            if !matches_data_range(
+                mass_entries.as_ref(),
+                &particle.pdg_id,
+                mass_range,
+                Unit::Mev,
+            ) || !matches_data_range(
+                width_entries.as_ref(),
+                &particle.pdg_id,
+                width_range,
+                Unit::Mev,
+            ) || !matches_data_range(
+                lifetime_entries.as_ref(),
+                &particle.pdg_id,
+                lifetime_range,
+                Unit::Seconds,
+            ) {
+                continue;
+            }
+
+            if decays_to.mode == DecayMatchMode::Exact
+                && !decays_to.states.is_empty()
+                && !self.particle_matches_exact_decay(
                     &particle.pdg_id,
-                    mass_range,
-                    Unit::Mev,
-                )
-            })
-            .filter(|particle| {
-                matches_data_range(
-                    width_entries.as_ref(),
-                    &particle.pdg_id,
-                    width_range,
-                    Unit::Mev,
-                )
-            })
-            .filter(|particle| {
-                matches_data_range(
-                    lifetime_entries.as_ref(),
-                    &particle.pdg_id,
-                    lifetime_range,
-                    Unit::Seconds,
-                )
-            })
-            .collect::<Vec<_>>())
+                    &decays_to.states,
+                    decay_state_expansion,
+                )?
+            {
+                continue;
+            }
+
+            filtered_particles.push(particle);
+        }
+
+        Ok(filtered_particles)
     }
 
     pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem>> {
@@ -314,6 +338,7 @@ impl Pdg {
         params: &mut Vec<Value>,
         states: Vec<String>,
         is_outgoing: bool,
+        expansion: DecayStateExpansion,
     ) -> PdgResult<()> {
         if states.is_empty() {
             return Ok(());
@@ -327,7 +352,7 @@ impl Pdg {
         );
 
         for state in states {
-            let names = self.expand_decay_state_names(state)?;
+            let names = self.expand_decay_state_names(state, expansion)?;
             let placeholders = std::iter::repeat_n("?", names.len())
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -366,7 +391,57 @@ impl Pdg {
         }
     }
 
-    fn expand_decay_state_names(&self, name: String) -> PdgResult<Vec<String>> {
+    fn particle_matches_exact_decay(
+        &self,
+        pdg_id: &str,
+        states: &[String],
+        expansion: DecayStateExpansion,
+    ) -> PdgResult<bool> {
+        let requested = states
+            .iter()
+            .map(|state| self.expand_decay_state_names(state.clone(), expansion))
+            .collect::<PdgResult<Vec<_>>>()?;
+        let mut stmt = self.conn.prepare(
+            "SELECT decay_pdgid.pdgid, pdgdecay.name, pdgdecay.multiplier
+            FROM pdgid decay_pdgid
+            JOIN pdgdecay ON pdgdecay.pdgid = decay_pdgid.pdgid
+            WHERE decay_pdgid.parent_pdgid = ?1
+                AND decay_pdgid.data_type IN ('BFX', 'BFX1', 'BFX2', 'BFX3', 'BFX4', 'BFX5', 'BFI', 'BFI1', 'BFI2', 'BFI3', 'BFI4', 'BFI5')
+                AND pdgdecay.is_outgoing = 1
+            ORDER BY decay_pdgid.sort ASC, pdgdecay.sort ASC",
+        )?;
+        let rows = stmt
+            .query_map([pdg_id], |row| {
+                Ok((
+                    row.get::<_, PdgId>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? as usize,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut modes = std::collections::HashMap::<PdgId, Vec<String>>::new();
+        for (mode_pdg_id, name, multiplier) in rows {
+            let products = modes.entry(mode_pdg_id).or_default();
+            for _ in 0..multiplier {
+                products.push(name.clone());
+            }
+        }
+
+        Ok(modes
+            .values()
+            .any(|products| exact_decay_products_match(&requested, products)))
+    }
+
+    fn expand_decay_state_names(
+        &self,
+        name: String,
+        expansion: DecayStateExpansion,
+    ) -> PdgResult<Vec<String>> {
+        if expansion == DecayStateExpansion::Literal {
+            return Ok(vec![name]);
+        }
+
         let mut names = vec![name.clone()];
         let mut seen = std::collections::HashSet::from([name.clone()]);
         let mut parents = Vec::new();
@@ -520,6 +595,40 @@ fn matches_data_range(
             Some(interval) => interval.overlaps(min, max),
             None => true,
         })
+}
+
+fn exact_decay_products_match(requested: &[Vec<String>], products: &[String]) -> bool {
+    if requested.len() != products.len() {
+        return false;
+    }
+
+    let mut used = vec![false; products.len()];
+    exact_decay_products_match_from(requested, products, &mut used, 0)
+}
+
+fn exact_decay_products_match_from(
+    requested: &[Vec<String>],
+    products: &[String],
+    used: &mut [bool],
+    index: usize,
+) -> bool {
+    if index == requested.len() {
+        return true;
+    }
+
+    for (product_index, product) in products.iter().enumerate() {
+        if used[product_index] || !requested[index].contains(product) {
+            continue;
+        }
+
+        used[product_index] = true;
+        if exact_decay_products_match_from(requested, products, used, index + 1) {
+            return true;
+        }
+        used[product_index] = false;
+    }
+
+    false
 }
 
 fn data_interval(entry: &DataEntry, unit: Unit) -> Option<Interval> {
