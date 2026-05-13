@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
-    ops::Deref,
 };
 
 use rusqlite::{
@@ -10,8 +9,8 @@ use rusqlite::{
 };
 
 use crate::{
-    DataEntry, DataType, LATEST_EDITION, LimitType, Pdg, PdgFootnote, PdgId, PdgItem,
-    PdgMeasurement, PdgResult, PdgText,
+    DataEntry, DataType, LATEST_EDITION, Pdg, PdgFootnote, PdgId, PdgItem, PdgMeasurement,
+    PdgResult, PdgText,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -446,19 +445,19 @@ impl<'pdg> PdgParticle<'pdg> {
         self.db.footnotes_for(&self.pdg_id)
     }
 
-    pub fn item(&self) -> PdgResult<Option<PdgItem>> {
+    pub fn item(&self) -> PdgResult<Option<PdgItem<'pdg>>> {
         self.db.item(&self.name)
     }
 
-    pub fn item_children(&self) -> PdgResult<Vec<crate::PdgItemChild<'_>>> {
+    pub fn item_children(&self) -> PdgResult<Vec<crate::PdgItemChild<'pdg>>> {
         self.db.item_children(&self.name)
     }
 
-    pub fn parent_items(&self) -> PdgResult<Vec<PdgItem>> {
+    pub fn parent_items(&self) -> PdgResult<Vec<PdgItem<'pdg>>> {
         self.db.item_parents(&self.name)
     }
 
-    pub fn related_particles(&self) -> PdgResult<Vec<PdgParticle<'_>>> {
+    pub fn related_particles(&self) -> PdgResult<Vec<PdgParticle<'pdg>>> {
         let mut related_particles = Vec::new();
         let mut seen = HashSet::new();
         seen.insert(self.name.clone());
@@ -484,19 +483,16 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
-    pub fn mass(&self) -> PdgResult<Option<Mass>> {
-        Ok(self.query_map(DataType::Mass, LATEST_EDITION, |data| {
-            ParticleData::try_from(data).ok().map(|data| Mass { data })
-        })?)
+    pub fn mass(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
+        self.query(DataType::Mass, LATEST_EDITION)
     }
-    pub fn lifetime(&self) -> PdgResult<Option<Lifetime>> {
-        Ok(self.query_map(DataType::Lifetime, LATEST_EDITION, |data| {
-            ParticleData::try_from(data)
-                .ok()
-                .map(|data| Lifetime { data })
-        })?)
+    pub fn lifetime(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
+        self.query(DataType::Lifetime, LATEST_EDITION)
     }
-    pub fn branching_fractions(&self) -> PdgResult<Vec<BranchingFraction>> {
+    pub fn width(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
+        self.query(DataType::FullWidth, LATEST_EDITION)
+    }
+    pub fn branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
             (
                 DataType::ExclusiveBranchingFraction,
@@ -554,7 +550,7 @@ impl<'pdg> PdgParticle<'pdg> {
             .map(|branching_fraction| branching_fraction.data)
             .collect())
     }
-    pub fn exclusive_branching_fractions(&self) -> PdgResult<Vec<BranchingFraction>> {
+    pub fn exclusive_branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
             (
                 DataType::ExclusiveBranchingFraction,
@@ -588,7 +584,7 @@ impl<'pdg> PdgParticle<'pdg> {
             .map(|branching_fraction| branching_fraction.data)
             .collect())
     }
-    pub fn inclusive_branching_fractions(&self) -> PdgResult<Vec<BranchingFraction>> {
+    pub fn inclusive_branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
             (
                 DataType::InclusiveBranchingFraction,
@@ -622,18 +618,15 @@ impl<'pdg> PdgParticle<'pdg> {
             .map(|branching_fraction| branching_fraction.data)
             .collect())
     }
-    pub fn branching_ratios(&self) -> PdgResult<Vec<BranchingRatio>> {
+    pub fn branching_ratios(&self) -> PdgResult<Vec<BranchingRatio<'pdg>>> {
         Ok(self
             .decay_data(DataType::BranchingRatio, LATEST_EDITION)?
             .into_iter()
-            .filter_map(|data| {
-                let value = ParticleData::try_from(data.data).ok()?;
-                Some(BranchingRatio {
-                    pdg_id: data.pdg_id,
-                    description: data.description,
-                    mode_number: data.mode_number,
-                    value,
-                })
+            .map(|data| BranchingRatio {
+                pdg_id: data.pdg_id,
+                description: data.description,
+                mode_number: data.mode_number,
+                value: data.data,
             })
             .collect())
     }
@@ -644,7 +637,7 @@ impl<'pdg> PdgParticle<'pdg> {
         predicate: P,
     ) -> PdgResult<Vec<T>>
     where
-        P: Fn(DataEntry) -> Option<T>,
+        P: Fn(DataEntry<'pdg>) -> Option<T>,
     {
         Ok(self
             .query_all(data_type, edition)?
@@ -659,7 +652,7 @@ impl<'pdg> PdgParticle<'pdg> {
         predicate: P,
     ) -> PdgResult<Option<T>>
     where
-        P: Fn(DataEntry) -> Option<T>,
+        P: Fn(DataEntry<'pdg>) -> Option<T>,
     {
         Ok(self.query(data_type, edition)?.map(predicate).flatten())
     }
@@ -667,7 +660,7 @@ impl<'pdg> PdgParticle<'pdg> {
         &self,
         data_type: DataType,
         edition: impl Into<String>,
-    ) -> PdgResult<Vec<DataEntry>> {
+    ) -> PdgResult<Vec<DataEntry<'pdg>>> {
         let sql = format!(
             "SELECT {} FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgid.parent_pdgid = ?2 AND pdgdata.edition = ?3 ORDER BY edition DESC, pdgdata.sort ASC",
             DataEntry::COLUMNS
@@ -676,7 +669,7 @@ impl<'pdg> PdgParticle<'pdg> {
         Ok(stmt
             .query_map(
                 [&data_type.to_string(), &self.pdg_id, &edition.into()],
-                |row| DataEntry::try_from(row),
+                |row| DataEntry::from_row(self.db, row),
             )?
             .collect::<Result<Vec<_>, _>>()?)
     }
@@ -684,7 +677,7 @@ impl<'pdg> PdgParticle<'pdg> {
         &self,
         data_type: DataType,
         edition: impl Into<String>,
-    ) -> PdgResult<Option<DataEntry>> {
+    ) -> PdgResult<Option<DataEntry<'pdg>>> {
         let sql = format!(
             "SELECT {} FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgid.parent_pdgid = ?2 AND pdgdata.edition = ?3 ORDER BY edition DESC, pdgdata.sort ASC",
             DataEntry::COLUMNS
@@ -693,7 +686,7 @@ impl<'pdg> PdgParticle<'pdg> {
         Ok(stmt
             .query_row(
                 [&data_type.to_string(), &self.pdg_id, &edition.into()],
-                |row| DataEntry::try_from(row),
+                |row| DataEntry::from_row(self.db, row),
             )
             .optional()?)
     }
@@ -701,26 +694,23 @@ impl<'pdg> PdgParticle<'pdg> {
     fn branching_fractions_for(
         &self,
         data_types: &[(DataType, BranchingFractionKind)],
-    ) -> PdgResult<Vec<BranchingFractionWithSort>> {
+    ) -> PdgResult<Vec<BranchingFractionWithSort<'pdg>>> {
         let mut branching_fractions = Vec::new();
         for (data_type, kind) in data_types {
             branching_fractions.extend(
                 self.decay_data(*data_type, LATEST_EDITION)?
                     .into_iter()
-                    .filter_map(|data| {
-                        let value = ParticleData::try_from(data.data).ok()?;
-                        Some(BranchingFractionWithSort {
-                            data: BranchingFraction {
-                                pdg_id: data.pdg_id,
-                                description: data.description,
-                                mode_number: data.mode_number,
-                                value,
-                                kind: *kind,
-                                products: Vec::new(),
-                                related_data: Vec::new(),
-                            },
-                            sort: data.sort,
-                        })
+                    .map(|data| BranchingFractionWithSort {
+                        data: BranchingFraction {
+                            pdg_id: data.pdg_id,
+                            description: data.description,
+                            mode_number: data.mode_number,
+                            value: data.data,
+                            kind: *kind,
+                            products: Vec::new(),
+                            related_data: Vec::new(),
+                        },
+                        sort: data.sort,
                     }),
             );
         }
@@ -732,7 +722,7 @@ impl<'pdg> PdgParticle<'pdg> {
         &self,
         data_type: DataType,
         edition: impl Into<String>,
-    ) -> PdgResult<Vec<DecayData>> {
+    ) -> PdgResult<Vec<DecayData<'pdg>>> {
         let data_type = data_type.to_string();
         let edition = edition.into();
         let sql = format!(
@@ -742,14 +732,14 @@ impl<'pdg> PdgParticle<'pdg> {
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
             .query_map([&data_type, &self.pdg_id, &edition], |row| {
-                DecayData::try_from(row)
+                DecayData::from_row(self.db, row)
             })?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
     fn attach_decay_products(
         &self,
-        branching_fractions: &mut [BranchingFractionWithSort],
+        branching_fractions: &mut [BranchingFractionWithSort<'pdg>],
     ) -> PdgResult<()> {
         if branching_fractions.is_empty() {
             return Ok(());
@@ -766,11 +756,12 @@ impl<'pdg> PdgParticle<'pdg> {
             "SELECT pdgid, name, is_outgoing, multiplier FROM pdgdecay WHERE pdgid IN ({placeholders}) ORDER BY pdgid ASC, sort ASC"
         );
         let mut stmt = self.db.db().prepare(&sql)?;
-        let mut products_by_pdg_id: HashMap<PdgId, Vec<DecayProduct>> = HashMap::new();
+        let mut products_by_pdg_id: HashMap<PdgId, Vec<DecayProduct<'pdg>>> = HashMap::new();
         let rows = stmt.query_map(params_from_iter(pdg_ids), |row| {
             Ok((
                 row.get::<_, PdgId>(0)?,
                 DecayProduct {
+                    db: self.db,
                     name: row.get(1)?,
                     is_outgoing: row.get(2)?,
                     multiplier: row.get::<_, i64>(3)? as usize,
@@ -793,7 +784,7 @@ impl<'pdg> PdgParticle<'pdg> {
 
     fn attach_related_data(
         &self,
-        branching_fractions: &mut [BranchingFractionWithSort],
+        branching_fractions: &mut [BranchingFractionWithSort<'pdg>],
     ) -> PdgResult<()> {
         if branching_fractions.is_empty() {
             return Ok(());
@@ -814,11 +805,11 @@ impl<'pdg> PdgParticle<'pdg> {
         let mut params = pdg_ids;
         params.push(LATEST_EDITION);
         let mut stmt = self.db.db().prepare(&sql)?;
-        let mut related_by_pdg_id: HashMap<PdgId, Vec<RelatedDataEntry>> = HashMap::new();
+        let mut related_by_pdg_id: HashMap<PdgId, Vec<RelatedDataEntry<'pdg>>> = HashMap::new();
         let rows = stmt.query_map(params_from_iter(params), |row| {
             Ok((
                 row.get::<_, PdgId>(DataEntry::COLUMN_COUNT + 3)?,
-                RelatedDataEntry::try_from(row),
+                RelatedDataEntry::from_row(self.db, row),
             ))
         })?;
 
@@ -842,19 +833,17 @@ impl<'pdg> PdgParticle<'pdg> {
 }
 
 #[derive(Debug)]
-struct DecayData {
+struct DecayData<'pdg> {
     pdg_id: PdgId,
     description: String,
     mode_number: Option<usize>,
-    data: DataEntry,
+    data: DataEntry<'pdg>,
     sort: usize,
 }
 
-impl TryFrom<&Row<'_>> for DecayData {
-    type Error = rusqlite::Error;
-
-    fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
-        let data = DataEntry::try_from(row)?;
+impl<'pdg> DecayData<'pdg> {
+    fn from_row(db: &'pdg Pdg, row: &Row<'_>) -> rusqlite::Result<Self> {
+        let data = DataEntry::from_row(db, row)?;
         Ok(Self {
             pdg_id: data.pdgid.clone(),
             description: row.get(DataEntry::COLUMN_COUNT)?,
@@ -868,105 +857,9 @@ impl TryFrom<&Row<'_>> for DecayData {
 }
 
 #[derive(Debug)]
-struct BranchingFractionWithSort {
-    data: BranchingFraction,
+struct BranchingFractionWithSort<'pdg> {
+    data: BranchingFraction<'pdg>,
     sort: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParticleData {
-    pub pdg_id: PdgId,
-    pub edition: String,
-    pub value_type: crate::ValueType,
-    pub in_summary_table: bool,
-    pub confidence_level: Option<f64>,
-    pub limit_type: Option<LimitType>,
-    pub comment: Option<String>,
-    pub value: f64,
-    pub error: Option<(f64, f64)>,
-    pub scale_factor: Option<f64>,
-    pub unit_text: String,
-    pub display_value_text: String,
-    pub display_power_of_ten: isize,
-    pub display_in_percent: bool,
-    pub sort: Option<isize>,
-}
-
-impl TryFrom<DataEntry> for ParticleData {
-    type Error = DataEntry;
-
-    fn try_from(data: DataEntry) -> Result<Self, Self::Error> {
-        let value = match data.value {
-            Some(value) => value,
-            None => return Err(data),
-        };
-        Ok(Self {
-            pdg_id: data.pdgid,
-            edition: data.edition,
-            value_type: data.value_type,
-            in_summary_table: data.in_summary_table,
-            confidence_level: data.confidence_level,
-            limit_type: data.limit_type,
-            comment: data.comment,
-            value,
-            error: match (data.error_positive, data.error_negative) {
-                (Some(error_positive), Some(error_negative)) => {
-                    Some((error_positive, error_negative))
-                }
-                _ => None,
-            },
-            scale_factor: data.scale_factor,
-            unit_text: data.unit_text,
-            display_value_text: data.display_value_text,
-            display_power_of_ten: data.display_power_of_ten,
-            display_in_percent: data.display_in_percent,
-            sort: data.sort,
-        })
-    }
-}
-impl Display for ParticleData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let error = self.error.unwrap_or_default();
-        write!(
-            f,
-            "{}+{}-{} {}",
-            self.value, error.0, error.1, self.unit_text
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Mass {
-    pub data: ParticleData,
-}
-impl Deref for Mass {
-    type Target = ParticleData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-impl Display for Mass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.data)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Lifetime {
-    pub data: ParticleData,
-}
-impl Deref for Lifetime {
-    type Target = ParticleData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-impl Display for Lifetime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.data)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -975,38 +868,69 @@ pub enum BranchingFractionKind {
     Inclusive,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecayProduct {
+#[derive(Debug, Clone)]
+pub struct DecayProduct<'pdg> {
+    pub(crate) db: &'pdg Pdg,
     pub name: String,
     pub is_outgoing: bool,
     pub multiplier: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct BranchingFraction {
-    pub pdg_id: PdgId,
-    pub description: String,
-    pub mode_number: Option<usize>,
-    pub value: ParticleData,
-    pub kind: BranchingFractionKind,
-    pub products: Vec<DecayProduct>,
-    pub related_data: Vec<RelatedDataEntry>,
+impl<'pdg> DecayProduct<'pdg> {
+    pub fn item(&self) -> PdgResult<Option<PdgItem<'pdg>>> {
+        self.db.item(&self.name)
+    }
+
+    pub fn particle(&self) -> PdgResult<Option<PdgParticle<'pdg>>> {
+        self.db.particle(&self.name)
+    }
+
+    pub fn children(&self) -> PdgResult<Vec<crate::PdgItemChild<'pdg>>> {
+        self.db.item_children(&self.name)
+    }
+
+    pub fn parents(&self) -> PdgResult<Vec<PdgItem<'pdg>>> {
+        self.db.item_parents(&self.name)
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct RelatedDataEntry {
+pub struct BranchingFraction<'pdg> {
+    pub pdg_id: PdgId,
+    pub description: String,
+    pub mode_number: Option<usize>,
+    pub value: DataEntry<'pdg>,
+    pub kind: BranchingFractionKind,
+    pub products: Vec<DecayProduct<'pdg>>,
+    pub related_data: Vec<RelatedDataEntry<'pdg>>,
+}
+
+impl<'pdg> BranchingFraction<'pdg> {
+    pub fn measurements(&self) -> PdgResult<Vec<PdgMeasurement>> {
+        self.value.measurements()
+    }
+
+    pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
+        self.value.footnotes()
+    }
+
+    pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
+        self.value.texts()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RelatedDataEntry<'pdg> {
     pub pdg_id: PdgId,
     pub description: String,
     pub data_type: DataType,
     pub mode_number: Option<usize>,
-    pub value: ParticleData,
+    pub value: DataEntry<'pdg>,
 }
 
-impl TryFrom<&Row<'_>> for RelatedDataEntry {
-    type Error = rusqlite::Error;
-
-    fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
-        let data = DataEntry::try_from(row)?;
+impl<'pdg> RelatedDataEntry<'pdg> {
+    fn from_row(db: &'pdg Pdg, row: &Row<'_>) -> rusqlite::Result<Self> {
+        let data = DataEntry::from_row(db, row)?;
         Ok(Self {
             pdg_id: data.pdgid.clone(),
             description: row.get(DataEntry::COLUMN_COUNT)?,
@@ -1014,17 +938,43 @@ impl TryFrom<&Row<'_>> for RelatedDataEntry {
                 .get::<_, Option<isize>>(DataEntry::COLUMN_COUNT + 1)?
                 .map(|mode_number| mode_number as usize),
             data_type: row.get(DataEntry::COLUMN_COUNT + 2)?,
-            value: ParticleData::try_from(data).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            value: data,
         })
+    }
+
+    pub fn measurements(&self) -> PdgResult<Vec<PdgMeasurement>> {
+        self.value.measurements()
+    }
+
+    pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
+        self.value.footnotes()
+    }
+
+    pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
+        self.value.texts()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct BranchingRatio {
+pub struct BranchingRatio<'pdg> {
     pub pdg_id: PdgId,
     pub description: String,
     pub mode_number: Option<usize>,
-    pub value: ParticleData,
+    pub value: DataEntry<'pdg>,
+}
+
+impl<'pdg> BranchingRatio<'pdg> {
+    pub fn measurements(&self) -> PdgResult<Vec<PdgMeasurement>> {
+        self.value.measurements()
+    }
+
+    pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
+        self.value.footnotes()
+    }
+
+    pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
+        self.value.texts()
+    }
 }
 
 #[cfg(test)]
@@ -1465,6 +1415,36 @@ mod tests {
     }
 
     #[test]
+    fn item_exposes_own_navigation() {
+        let db = Pdg::open().unwrap();
+        let pion = db.item("pi+").unwrap().unwrap();
+        let kaon_group = db.item("K").unwrap().unwrap();
+
+        assert_eq!(pion.particle().unwrap().unwrap().name, "pi+");
+        assert!(kaon_group.particle().unwrap().is_none());
+        assert!(
+            pion.parents()
+                .unwrap()
+                .iter()
+                .any(|item| item.name == "pi" && item.item_type == PdgItemType::Group)
+        );
+        assert!(
+            kaon_group
+                .children()
+                .unwrap()
+                .iter()
+                .any(|child| child.item.name == "K(S)0")
+        );
+        assert!(
+            kaon_group
+                .related_particles()
+                .unwrap()
+                .iter()
+                .any(|particle| particle.name == "K+")
+        );
+    }
+
+    #[test]
     fn particle_exposes_item_context() {
         let db = Pdg::open().unwrap();
         let pion = db.particle("pi+").unwrap().unwrap();
@@ -1611,8 +1591,20 @@ mod tests {
         let mass = pion.mass().unwrap().unwrap();
         let lifetime = pion.lifetime().unwrap().unwrap();
 
-        assert!(mass.value > 100.0);
-        assert!(lifetime.value < 0.000001);
+        assert!(mass.value.unwrap() > 100.0);
+        assert!(lifetime.value.unwrap() < 0.000001);
+    }
+
+    #[test]
+    fn width_uses_full_width_data_type() {
+        let db = Pdg::open().unwrap();
+        let z_boson = db.particle("Z0").unwrap().unwrap();
+
+        let width = z_boson.width().unwrap().unwrap();
+
+        assert!(width.value.unwrap() > 2.0);
+        assert_eq!(width.unit_text, "GeV");
+        assert_eq!(width.pdgid, "S044W");
     }
 
     #[test]
@@ -1634,6 +1626,29 @@ mod tests {
         assert!(!muon_mode.products[0].is_outgoing);
         assert_eq!(muon_mode.products[1].name, "mu+");
         assert!(muon_mode.products[1].is_outgoing);
+
+        let muon_product = &muon_mode.products[1];
+        assert_eq!(muon_product.item().unwrap().unwrap().name, "mu+");
+        assert_eq!(muon_product.particle().unwrap().unwrap().name, "mu+");
+        assert!(
+            muon_product
+                .parents()
+                .unwrap()
+                .iter()
+                .any(|item| item.name == "mu")
+        );
+        assert_eq!(
+            muon_mode.measurements().unwrap().len(),
+            db.measurements_for(muon_mode.pdg_id.clone()).unwrap().len()
+        );
+        assert_eq!(
+            muon_mode.footnotes().unwrap().len(),
+            db.footnotes_for(muon_mode.pdg_id.clone()).unwrap().len()
+        );
+        assert_eq!(
+            muon_mode.texts().unwrap().len(),
+            db.texts_for(muon_mode.pdg_id.clone()).unwrap().len()
+        );
     }
 
     #[test]
@@ -1654,8 +1669,17 @@ mod tests {
 
         assert_eq!(related_ratio.data_type, DataType::BranchingRatio);
         assert!(related_ratio.description.contains("G(pi+ --> e+ nu_e)"));
-        assert!(related_ratio.value.value > 0.0);
+        assert!(related_ratio.value.value.unwrap() > 0.0);
         assert!(!related_ratio.value.display_value_text.is_empty());
+
+        assert_eq!(
+            related_ratio.measurements().unwrap().len(),
+            db.measurements_for(related_ratio.pdg_id.clone())
+                .unwrap()
+                .len()
+        );
+        assert!(!related_ratio.footnotes().unwrap().is_empty());
+        assert!(!related_ratio.texts().unwrap().is_empty());
     }
 
     #[test]
@@ -1676,7 +1700,7 @@ mod tests {
                 .any(|related_data| related_data.pdg_id == "S010T"
                     && related_data.data_type == DataType::Lifetime
                     && related_data.description == "K+- MEAN LIFE"
-                    && related_data.value.value > 0.0)
+                    && related_data.value.value.unwrap() > 0.0)
         );
     }
 
@@ -1716,7 +1740,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(ratio.description, "G(pi+ --> e+ nu_e)/G(total)");
-        assert!(ratio.value.value > 0.0);
+        assert!(ratio.value.value.unwrap() > 0.0);
+        assert_eq!(
+            ratio.measurements().unwrap().len(),
+            db.measurements_for(ratio.pdg_id.clone()).unwrap().len()
+        );
+        assert!(!ratio.texts().unwrap().is_empty());
     }
 
     #[test]
@@ -1730,7 +1759,8 @@ mod tests {
             .find(|ratio| ratio.pdg_id == "B002R1")
             .unwrap();
 
-        assert_eq!(ratio.value.error, Some((0.03, 0.03)));
+        assert_eq!(ratio.value.error_positive, Some(0.03));
+        assert_eq!(ratio.value.error_negative, Some(0.03));
     }
 
     #[test]
@@ -1758,6 +1788,61 @@ mod tests {
     }
 
     #[test]
+    fn width_preserves_confidence_level_and_limit_type() {
+        let db = Pdg::open().unwrap();
+        let d_star = db.particle("D^*(2007)0").unwrap().unwrap();
+        let width = d_star.width().unwrap().unwrap();
+
+        assert_eq!(width.confidence_level, Some(90.0));
+        assert_eq!(width.limit_type, Some(LimitType::UpperLimit));
+    }
+
+    #[test]
+    fn data_entry_loads_measurements_from_own_pdgid() {
+        let db = Pdg::open().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+        let mass = pion.mass().unwrap().unwrap();
+
+        let entry_measurements = mass.measurements().unwrap();
+        let direct_measurements = db.measurements_for(mass.pdgid.clone()).unwrap();
+
+        assert_eq!(entry_measurements.len(), direct_measurements.len());
+        assert_eq!(
+            entry_measurements[0].reference.document_id,
+            direct_measurements[0].reference.document_id
+        );
+    }
+
+    #[test]
+    fn data_entry_displays_database_display_fields() {
+        let db = Pdg::open().unwrap();
+        let z_boson = db.particle("Z0").unwrap().unwrap();
+        let pion = db.particle("pi+").unwrap().unwrap();
+        let d_star = db.particle("D^*(2007)0").unwrap().unwrap();
+        let muon = db.particle("mu+").unwrap().unwrap();
+
+        assert_eq!(
+            z_boson.width().unwrap().unwrap().to_string(),
+            "2.4955+-0.0023 GeV"
+        );
+        assert_eq!(
+            pion.exclusive_branching_fractions()
+                .unwrap()
+                .into_iter()
+                .find(|mode| mode.pdg_id == "S008.1")
+                .unwrap()
+                .value
+                .to_string(),
+            "99.98770+-0.00004%"
+        );
+        assert_eq!(d_star.width().unwrap().unwrap().to_string(), "<2.1 MeV");
+        assert_eq!(
+            muon.lifetime().unwrap().unwrap().to_string(),
+            "2.1969811+-0.0000022E-6 s"
+        );
+    }
+
+    #[test]
     fn upper_limit_branching_fractions_preserve_limit_type() {
         let db = Pdg::open().unwrap();
         let pion = db.particle("pi+").unwrap().unwrap();
@@ -1769,6 +1854,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(limit_mode.value.limit_type, Some(LimitType::UpperLimit));
-        assert_eq!(limit_mode.value.error, Some((0.0, 0.0)));
+        assert_eq!(limit_mode.value.error_positive, Some(0.0));
+        assert_eq!(limit_mode.value.error_negative, Some(0.0));
     }
 }

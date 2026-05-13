@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use rusqlite::Row;
 
 use crate::{LimitType, PdgFootnote, PdgId};
@@ -102,5 +104,28 @@ impl TryFrom<&Row<'_>> for PdgMeasurementValue {
             syst_error_negative: row.get(15)?,
             sort: row.get(16)?,
         })
+    }
+}
+
+impl Display for PdgMeasurementValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.display_value_text
+                .clone()
+                .unwrap_or("NULL".to_string())
+        )?;
+        if self.display_in_percent.unwrap_or_default() {
+            write!(f, "%")?;
+        } else if self.display_power_of_ten.unwrap_or_default() != 0 {
+            write!(f, "E{}", self.display_power_of_ten.unwrap_or_default())?;
+        }
+        if let Some(unit_text) = &self.unit_text {
+            if !unit_text.is_empty() {
+                write!(f, " {}", unit_text)?;
+            }
+        }
+        Ok(())
     }
 }

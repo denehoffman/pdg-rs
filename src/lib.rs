@@ -237,13 +237,13 @@ impl Pdg {
         Ok(filtered_particles)
     }
 
-    pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem>> {
+    pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem<'_>>> {
         let name = name.into();
         let mut stmt = self
             .conn
             .prepare("SELECT name, item_type FROM pdgitem WHERE name = ?1")?;
         Ok(stmt
-            .query_row([&name], |row| PdgItem::try_from(row))
+            .query_row([&name], |row| PdgItem::from_row(self, row))
             .optional()?)
     }
 
@@ -254,7 +254,7 @@ impl Pdg {
                 "SELECT child.name, child.item_type, pdgitem_map.sort FROM pdgitem_map JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id JOIN pdgitem child ON child.id = pdgitem_map.target_id WHERE parent.name = ?1 ORDER BY pdgitem_map.sort",
             )?;
             stmt.query_map([&name], |row| {
-                Ok((PdgItem::try_from(row)?, row.get::<_, isize>(2)?))
+                Ok((PdgItem::from_row(self, row)?, row.get::<_, isize>(2)?))
             })?
             .collect::<Result<Vec<_>, _>>()?
         };
@@ -275,13 +275,13 @@ impl Pdg {
             .collect()
     }
 
-    pub fn item_parents(&self, name: impl Into<String>) -> PdgResult<Vec<PdgItem>> {
+    pub fn item_parents(&self, name: impl Into<String>) -> PdgResult<Vec<PdgItem<'_>>> {
         let name = name.into();
         let mut stmt = self.conn.prepare(
             "SELECT parent.name, parent.item_type FROM pdgitem_map JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id JOIN pdgitem child ON child.id = pdgitem_map.target_id WHERE child.name = ?1 ORDER BY parent.item_type, parent.name",
         )?;
         Ok(stmt
-            .query_map([&name], |row| PdgItem::try_from(row))?
+            .query_map([&name], |row| PdgItem::from_row(self, row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -532,7 +532,7 @@ impl Pdg {
     fn data_entries_by_parent(
         &self,
         data_type: DataType,
-    ) -> PdgResult<std::collections::HashMap<PdgId, Vec<DataEntry>>> {
+    ) -> PdgResult<std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>> {
         let data_type = data_type.to_string();
         let sql = format!(
             "SELECT {}, pdgid.parent_pdgid FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgdata.edition = ?2",
@@ -543,13 +543,13 @@ impl Pdg {
             .query_map([&data_type, LATEST_EDITION], |row| {
                 Ok((
                     row.get::<_, PdgId>(DataEntry::COLUMN_COUNT)?,
-                    DataEntry::try_from(row)?,
+                    DataEntry::from_row(self, row)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut grouped =
-            std::collections::HashMap::<PdgId, (Vec<DataEntry>, Vec<DataEntry>)>::new();
+            std::collections::HashMap::<PdgId, (Vec<DataEntry<'_>>, Vec<DataEntry<'_>>)>::new();
         for (parent_pdgid, entry) in rows {
             let (all_entries, summary_entries) = grouped.entry(parent_pdgid).or_default();
             all_entries.push(entry.clone());
@@ -591,7 +591,7 @@ impl Interval {
 }
 
 fn matches_data_range(
-    entries_by_parent: Option<&std::collections::HashMap<PdgId, Vec<DataEntry>>>,
+    entries_by_parent: Option<&std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>>,
     pdg_id: &str,
     range: Option<(f64, f64)>,
     unit: Unit,
