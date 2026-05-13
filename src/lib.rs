@@ -1,4 +1,4 @@
-use rusqlite::{Connection, MAIN_DB, OptionalExtension};
+use rusqlite::{Connection, MAIN_DB, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
 
 mod models;
@@ -120,6 +120,77 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    pub fn search_particles(&self, query: ParticleSearch) -> PdgResult<Vec<PdgParticle<'_>>> {
+        let mut sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE 1 = 1",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut params = Vec::new();
+
+        if let Some(name_contains) = query.name_contains {
+            sql.push_str(" AND name LIKE '%' || ? || '%'");
+            params.push(Value::Text(name_contains));
+        }
+
+        if let Some(particle_class) = query.particle_class {
+            sql.push_str(" AND pdgid.flags = ?");
+            params.push(Value::Text(particle_class.flag().to_string()));
+        }
+
+        if let Some(angular_momentum) = query.angular_momentum {
+            sql.push_str(" AND quantum_j = ?");
+            params.push(Value::Text(angular_momentum.to_string()));
+        }
+
+        if let Some((min, max)) = query.mass_range_mev {
+            sql.push_str(
+                " AND pdgparticle.pdgid IN (
+                    SELECT mass_pdgid.parent_pdgid
+                    FROM pdgid mass_pdgid
+                    JOIN pdgdata mass_data ON mass_data.pdgid_id = mass_pdgid.id
+                    WHERE mass_pdgid.data_type = 'M'
+                        AND mass_data.edition = ?
+                        AND mass_data.value IS NOT NULL
+                        AND CASE mass_data.unit_text
+                            WHEN 'MeV' THEN mass_data.value
+                            WHEN 'GeV' THEN mass_data.value * 1000.0
+                            WHEN 'eV' THEN mass_data.value / 1000000.0
+                            WHEN 'u' THEN mass_data.value * 931.49410242
+                        END BETWEEN ? AND ?
+                        AND (
+                            mass_data.in_summary_table = 1
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM pdgid summary_pdgid
+                                JOIN pdgdata summary_data ON summary_data.pdgid_id = summary_pdgid.id
+                                WHERE summary_pdgid.parent_pdgid = mass_pdgid.parent_pdgid
+                                    AND summary_pdgid.data_type = 'M'
+                                    AND summary_data.edition = ?
+                                    AND summary_data.value IS NOT NULL
+                                    AND summary_data.in_summary_table = 1
+                            )
+                        )
+                )",
+            );
+            params.push(Value::Text(LATEST_EDITION.to_string()));
+            params.push(Value::Real(min));
+            params.push(Value::Real(max));
+            params.push(Value::Text(LATEST_EDITION.to_string()));
+        }
+
+        self.push_decay_filters(&mut sql, &mut params, query.decays_to, true)?;
+        self.push_decay_filters(&mut sql, &mut params, query.decays_from, false)?;
+
+        sql.push_str(" ORDER BY pdgparticle.pdgid, name");
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt
+            .query_map(params_from_iter(params), |row| {
+                PdgParticle::from_row(self, row)
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem>> {
         let name = name.into();
         let mut stmt = self
@@ -213,5 +284,62 @@ impl Pdg {
         }
 
         Ok(measurements)
+    }
+
+    fn push_decay_filters(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<Value>,
+        states: Vec<String>,
+        is_outgoing: bool,
+    ) -> PdgResult<()> {
+        if states.is_empty() {
+            return Ok(());
+        }
+
+        sql.push_str(
+            " AND pdgparticle.pdgid IN (
+                SELECT decay_pdgid.parent_pdgid
+                FROM pdgid decay_pdgid
+                WHERE decay_pdgid.data_type IN ('BFX', 'BFX1', 'BFX2', 'BFX3', 'BFX4', 'BFX5', 'BFI', 'BFI1', 'BFI2', 'BFI3', 'BFI4', 'BFI5')",
+        );
+
+        for state in states {
+            let names = self.expand_decay_state_names(state)?;
+            let placeholders = std::iter::repeat_n("?", names.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(&format!(
+                " AND EXISTS (
+                    SELECT 1
+                    FROM pdgdecay
+                    WHERE pdgdecay.pdgid = decay_pdgid.pdgid
+                        AND pdgdecay.is_outgoing = ?
+                        AND pdgdecay.name IN ({placeholders})
+                )"
+            ));
+            params.push(Value::Integer(if is_outgoing { 1 } else { 0 }));
+            params.extend(names.into_iter().map(Value::Text));
+        }
+
+        sql.push(')');
+        Ok(())
+    }
+
+    fn expand_decay_state_names(&self, name: String) -> PdgResult<Vec<String>> {
+        let mut names = vec![name.clone()];
+        let mut seen = std::collections::HashSet::from([name.clone()]);
+        let mut stmt = self.conn.prepare(
+            "SELECT child.name FROM pdgitem_map JOIN pdgitem parent ON parent.id = pdgitem_map.pdgitem_id JOIN pdgitem child ON child.id = pdgitem_map.target_id WHERE parent.name = ?1 ORDER BY pdgitem_map.sort",
+        )?;
+        for child in stmt
+            .query_map([&name], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+        {
+            if seen.insert(child.clone()) {
+                names.push(child);
+            }
+        }
+        Ok(names)
     }
 }

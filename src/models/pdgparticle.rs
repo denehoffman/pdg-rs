@@ -219,7 +219,7 @@ impl FromSql for Isospin {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AngularMomentum {
     J0,
     J1,
@@ -1005,7 +1005,10 @@ pub struct BranchingRatio {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BranchingFractionKind, DataType, LimitType, ParticleClass, Pdg, PdgItemType};
+    use crate::{
+        AngularMomentum, BranchingFractionKind, DataType, LimitType, ParticleClass, ParticleSearch,
+        Pdg, PdgItemType,
+    };
 
     #[test]
     fn displays_particle_identity_and_quantum_numbers() {
@@ -1125,6 +1128,82 @@ mod tests {
         );
         assert!(pion_mesons.iter().any(|particle| particle.name == "pi+"));
         assert!(!pion_baryons.iter().any(|particle| particle.name == "pi+"));
+    }
+
+    #[test]
+    fn searches_by_class_and_angular_momentum() {
+        let db = Pdg::open().unwrap();
+        let vector_mesons = db
+            .search_particles(
+                ParticleSearch::new()
+                    .class(ParticleClass::Meson)
+                    .angular_momentum(AngularMomentum::J2),
+            )
+            .unwrap();
+
+        assert!(!vector_mesons.is_empty());
+        assert!(vector_mesons.iter().all(|particle| {
+            particle.particle_class == ParticleClass::Meson
+                && particle.quantum_j == Some(AngularMomentum::J2)
+        }));
+    }
+
+    #[test]
+    fn searches_by_normalized_mass_range() {
+        let db = Pdg::open().unwrap();
+        let light_mesons = db
+            .search_particles(
+                ParticleSearch::new()
+                    .class(ParticleClass::Meson)
+                    .mass_range_mev(100.0, 150.0),
+            )
+            .unwrap();
+
+        assert!(light_mesons.iter().any(|particle| particle.name == "pi+"));
+        assert!(light_mesons.iter().any(|particle| particle.name == "pi-"));
+        assert!(light_mesons.iter().any(|particle| particle.name == "pi0"));
+    }
+
+    #[test]
+    fn searches_by_decay_final_states() {
+        let db = Pdg::open().unwrap();
+        let sigma_modes = db
+            .search_particles(
+                ParticleSearch::new()
+                    .class(ParticleClass::Baryon)
+                    .decays_to(["N", "Kbar"]),
+            )
+            .unwrap();
+
+        assert!(
+            sigma_modes
+                .iter()
+                .any(|particle| particle.name.starts_with("Sigma(2010)"))
+        );
+    }
+
+    #[test]
+    fn searches_by_decay_initial_and_final_states() {
+        let db = Pdg::open().unwrap();
+        let pion_modes = db
+            .search_particles(
+                ParticleSearch::new()
+                    .decays_from(["pi+"])
+                    .decays_to(["mu+", "nu_mu"]),
+            )
+            .unwrap();
+
+        assert!(pion_modes.iter().any(|particle| particle.name == "pi+"));
+    }
+
+    #[test]
+    fn searches_decay_states_using_item_expansion() {
+        let db = Pdg::open().unwrap();
+        let kaon_modes = db
+            .search_particles(ParticleSearch::new().decays_from(["K+"]).decays_to(["pi"]))
+            .unwrap();
+
+        assert!(kaon_modes.iter().any(|particle| particle.name == "K+"));
     }
 
     #[test]

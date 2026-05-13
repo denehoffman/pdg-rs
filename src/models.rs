@@ -8,6 +8,9 @@ pub use pdgparticle::{
     PdgParticle,
 };
 
+mod pdgsearch;
+pub use pdgsearch::ParticleSearch;
+
 mod pdgdata;
 pub use pdgdata::DataEntry;
 
