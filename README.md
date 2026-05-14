@@ -15,15 +15,13 @@ cargo add pdg-rs
 This crate also provides a `pdg` binary for searching the embedded database:
 ```bash
 pdg show S008245
+pdg show M036 --summary
 pdg search particles K --limit 5
 pdg search text "form factors"
-pdg particle pi+
-pdg particle --class lepton --limit 5
-pdg particle --decays-to K\(S\)0,K\(S\)0 --charge 0
-pdg pdgid S008
-pdg text "form factors" # alias for `pdg search text`
+pdg search particles --class lepton --limit 5
+pdg search particles --decays-to K\(S\)0,K\(S\)0 --charge 0
 ```
-`pdgid` refers to PDG database string IDs like `S008` and `S008245`; Monte Carlo particle IDs are exposed as `mcid` in the Rust API and through `pdg particle --mcid 211`.
+`pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Monte Carlo particle IDs are exposed as `mcid` in the Rust API and can be used as a particle search filter with `pdg search particles --mcid 211`.
 
 ### Get information about a specific particle:
 ```rust
