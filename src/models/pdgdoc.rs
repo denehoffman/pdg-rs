@@ -20,24 +20,43 @@ pub enum ValueType {
     Internal,
 }
 
+impl ValueType {
+    pub fn to_code(&self) -> &'static str {
+        match self {
+            Self::WeightedAverage => "AC",
+            Self::BestLimit => "L",
+            Self::BranchingRatio => "D",
+            Self::PdgEvaluation => "V",
+            Self::PdgLimit => "OL",
+            Self::ExtraBelow => "OM",
+            Self::ExtraAbove => "ON",
+            Self::FittedData => "FC",
+            Self::FittedDecayRate => "DR",
+            Self::Estimate => "E",
+            Self::DefaultEvaluation => "O",
+            Self::Internal => "DV",
+        }
+    }
+}
+
 impl Display for ValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                Self::WeightedAverage => "AC",
-                Self::BestLimit => "L",
-                Self::BranchingRatio => "D",
-                Self::PdgEvaluation => "V",
-                Self::PdgLimit => "OL",
-                Self::ExtraBelow => "OM",
-                Self::ExtraAbove => "ON",
-                Self::FittedData => "FC",
-                Self::FittedDecayRate => "DR",
-                Self::Estimate => "E",
-                Self::DefaultEvaluation => "O",
-                Self::Internal => "DV",
+                Self::WeightedAverage => "Weighted average",
+                Self::BestLimit => "Best limit",
+                Self::BranchingRatio => "Branching ratio",
+                Self::PdgEvaluation => "PDG evaluation",
+                Self::PdgLimit => "PDG limit",
+                Self::ExtraBelow => "Extra below",
+                Self::ExtraAbove => "Extra above",
+                Self::FittedData => "Fitted data",
+                Self::FittedDecayRate => "Fitted decay rate",
+                Self::Estimate => "Estimate",
+                Self::DefaultEvaluation => "Default evaluation",
+                Self::Internal => "Internal",
             }
         )
     }
@@ -157,6 +176,8 @@ pub enum DataType {
     BranchingRatio,
     Particle,
     Searches,
+    Section,
+    Other,
 }
 
 impl FromSql for DataType {
@@ -172,43 +193,82 @@ impl FromSql for DataType {
     }
 }
 
+impl DataType {
+    pub fn to_code(&self) -> &'static str {
+        match self {
+            Self::ElectricDipoleMoment => "e",
+            Self::MagneticMoment => "m",
+            Self::CPViolationParameter => "v",
+            Self::MassDifference => "D",
+            Self::FormFactor => "f",
+            Self::MeanLifetime => "g",
+            Self::SlopeParameter => "s",
+            Self::FullWidth => "G",
+            Self::Mass => "M",
+            Self::CouplingConstantRatio => "c",
+            Self::DecayParameter => "d",
+            Self::Lifetime => "T",
+            Self::ExclusiveBranchingFraction => "BFX",
+            Self::ExclusiveBranchingFraction1 => "BFX1",
+            Self::ExclusiveBranchingFraction2 => "BFX2",
+            Self::ExclusiveBranchingFraction3 => "BFX3",
+            Self::ExclusiveBranchingFraction4 => "BFX4",
+            Self::ExclusiveBranchingFraction5 => "BFX5",
+            Self::InclusiveBranchingFraction => "BFI",
+            Self::InclusiveBranchingFraction1 => "BFI1",
+            Self::InclusiveBranchingFraction2 => "BFI2",
+            Self::InclusiveBranchingFraction3 => "BFI3",
+            Self::InclusiveBranchingFraction4 => "BFI4",
+            Self::InclusiveBranchingFraction5 => "BFI5",
+            Self::BranchingRatio => "BR",
+            Self::Particle => "PART",
+            Self::Searches => "SRCH",
+            Self::Section => "SEC",
+            Self::Other => "",
+        }
+    }
+}
+
 impl Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                Self::ElectricDipoleMoment => "e",
-                Self::MagneticMoment => "m",
-                Self::CPViolationParameter => "v",
-                Self::MassDifference => "D",
-                Self::FormFactor => "f",
-                Self::MeanLifetime => "g",
-                Self::SlopeParameter => "s",
-                Self::FullWidth => "G",
-                Self::Mass => "M",
-                Self::CouplingConstantRatio => "c",
-                Self::DecayParameter => "d",
-                Self::Lifetime => "T",
-                Self::ExclusiveBranchingFraction => "BFX",
-                Self::ExclusiveBranchingFraction1 => "BFX1",
-                Self::ExclusiveBranchingFraction2 => "BFX2",
-                Self::ExclusiveBranchingFraction3 => "BFX3",
-                Self::ExclusiveBranchingFraction4 => "BFX4",
-                Self::ExclusiveBranchingFraction5 => "BFX5",
-                Self::InclusiveBranchingFraction => "BFI",
-                Self::InclusiveBranchingFraction1 => "BFI1",
-                Self::InclusiveBranchingFraction2 => "BFI2",
-                Self::InclusiveBranchingFraction3 => "BFI3",
-                Self::InclusiveBranchingFraction4 => "BFI4",
-                Self::InclusiveBranchingFraction5 => "BFI5",
-                Self::BranchingRatio => "BR",
-                Self::Particle => "PART",
-                Self::Searches => "SRCH",
+                Self::ElectricDipoleMoment => "Electric dipole moment",
+                Self::MagneticMoment => "Magnetic moment",
+                Self::CPViolationParameter => "CP violation parameter",
+                Self::MassDifference => "Mass difference",
+                Self::FormFactor => "Form factor",
+                Self::MeanLifetime => "Mean lifetime",
+                Self::SlopeParameter => "Slope parameter",
+                Self::FullWidth => "Width",
+                Self::Mass => "Mass",
+                Self::CouplingConstantRatio => "Coupling constant ratio",
+                Self::DecayParameter => "Decay parameter",
+                Self::Lifetime => "Lifetime",
+                Self::ExclusiveBranchingFraction
+                | Self::ExclusiveBranchingFraction1
+                | Self::ExclusiveBranchingFraction2
+                | Self::ExclusiveBranchingFraction3
+                | Self::ExclusiveBranchingFraction4
+                | Self::ExclusiveBranchingFraction5 => "Exclusive branching fraction",
+                Self::InclusiveBranchingFraction
+                | Self::InclusiveBranchingFraction1
+                | Self::InclusiveBranchingFraction2
+                | Self::InclusiveBranchingFraction3
+                | Self::InclusiveBranchingFraction4
+                | Self::InclusiveBranchingFraction5 => "Inclusive branching fraction",
+                Self::BranchingRatio => "Branching ratio",
+                Self::Particle => "Particle",
+                Self::Searches => "Searches",
+                Self::Section => "Section",
+                Self::Other => "Other",
             }
         )
     }
 }
+
 impl FromStr for DataType {
     type Err = PdgError;
 
@@ -241,6 +301,8 @@ impl FromStr for DataType {
             "BR" => Ok(Self::BranchingRatio),
             "PART" => Ok(Self::Particle),
             "SRCH" => Ok(Self::Searches),
+            "SEC" => Ok(Self::Section),
+            "" => Ok(Self::Other),
             _ => Err(PdgError::ParseDataType(s.to_string())),
         }
     }

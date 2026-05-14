@@ -3,6 +3,7 @@ use std::{
     fmt::Display,
 };
 
+use comfy_table::Table;
 use rusqlite::{
     OptionalExtension, Row, params_from_iter,
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
@@ -10,7 +11,7 @@ use rusqlite::{
 
 use crate::{
     DataEntry, DataType, LATEST_EDITION, Pdg, PdgFootnote, PdgId, PdgItem, PdgMeasurement,
-    PdgResult, PdgText,
+    PdgResult, PdgText, table,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -437,6 +438,130 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
+    pub fn headline_property_rows(&self) -> PdgResult<Vec<[String; 4]>> {
+        let mut rows = Vec::new();
+        if let Some(mass) = self.mass()? {
+            rows.push([
+                "Mass".to_string(),
+                mass.to_string(),
+                mass.pdgid,
+                "Direct".to_string(),
+            ]);
+        }
+        if let Some(lifetime) = self.lifetime()? {
+            rows.push([
+                "Lifetime".to_string(),
+                lifetime.to_string(),
+                lifetime.pdgid,
+                "Direct".to_string(),
+            ]);
+        }
+        if let Some(width) = self.width()? {
+            rows.push([
+                "Width".to_string(),
+                width.to_string(),
+                width.pdgid,
+                "Direct".to_string(),
+            ]);
+        }
+
+        for section in self.db.children_for_pdg_id(&self.pdg_id)? {
+            if !matches!(section.data_type, DataType::Section) {
+                continue;
+            }
+            for child in self.db.children_for_pdg_id(&section.pdg_id)? {
+                let data = self.db.data_for(&child.pdg_id)?;
+                if let Some(value) = data.first() {
+                    rows.push([
+                        child.data_type.to_string(),
+                        value.to_string(),
+                        child.pdg_id,
+                        format!("Section {}", section.pdg_id),
+                    ]);
+                    break;
+                }
+            }
+        }
+
+        Ok(rows)
+    }
+
+    fn search_property_summary(&self) -> PdgResult<[String; 3]> {
+        let mut mass = String::new();
+        let mut lifetime = String::new();
+        let mut width = String::new();
+
+        for row in self.headline_property_rows()? {
+            match row[0].as_str() {
+                "Mass" if mass.is_empty() => mass = row[1].clone(),
+                "Lifetime" if lifetime.is_empty() => lifetime = row[1].clone(),
+                "Width" if width.is_empty() => width = row[1].clone(),
+                _ => {}
+            }
+        }
+
+        Ok([mass, lifetime, width])
+    }
+
+    pub fn make_table(particles: &[Self], full: bool) -> PdgResult<Table> {
+        let mut table = table();
+        if full {
+            table.set_header([
+                "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
+                "Quantum",
+            ]);
+            for particle in particles {
+                let [mass, lifetime, width] = particle.search_property_summary()?;
+                table.add_row([
+                    particle.pdg_id.clone(),
+                    particle.name.clone(),
+                    particle.particle_class.to_string(),
+                    particle.particle_type.to_string(),
+                    particle.charge.to_string(),
+                    particle
+                        .mcid
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    mass,
+                    lifetime,
+                    width,
+                    particle.quantum_summary(),
+                ]);
+            }
+        } else {
+            table.set_header(["Name", "PDG ID", "Class", "Type", "MCID", "Quantum"]);
+            for particle in particles {
+                table.add_row([
+                    particle.name.clone(),
+                    particle.pdg_id.clone(),
+                    particle.particle_class.to_string(),
+                    particle.particle_type.to_string(),
+                    particle
+                        .mcid
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    particle.quantum_summary(),
+                ]);
+            }
+        }
+        Ok(table)
+    }
+
+    pub fn quantum_summary(&self) -> String {
+        [
+            Some(format!("Q={}", self.charge.to_string())),
+            self.quantum_i.as_ref().map(|value| format!("I={value}")),
+            self.quantum_g.as_ref().map(|value| format!("G={value}")),
+            self.quantum_j.as_ref().map(|value| format!("J={value}")),
+            self.quantum_p.as_ref().map(|value| format!("P={value}")),
+            self.quantum_c.as_ref().map(|value| format!("C={value}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+
     pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
         self.db.texts_for(&self.pdg_id)
     }
@@ -668,7 +793,7 @@ impl<'pdg> PdgParticle<'pdg> {
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
             .query_map(
-                [&data_type.to_string(), &self.pdg_id, &edition.into()],
+                [data_type.to_code(), &self.pdg_id, &edition.into()],
                 |row| DataEntry::from_row(self.db, row),
             )?
             .collect::<Result<Vec<_>, _>>()?)
@@ -685,7 +810,7 @@ impl<'pdg> PdgParticle<'pdg> {
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
             .query_row(
-                [&data_type.to_string(), &self.pdg_id, &edition.into()],
+                [data_type.to_code(), &self.pdg_id, &edition.into()],
                 |row| DataEntry::from_row(self.db, row),
             )
             .optional()?)
@@ -723,7 +848,7 @@ impl<'pdg> PdgParticle<'pdg> {
         data_type: DataType,
         edition: impl Into<String>,
     ) -> PdgResult<Vec<DecayData<'pdg>>> {
-        let data_type = data_type.to_string();
+        let data_type = data_type.to_code();
         let edition = edition.into();
         let sql = format!(
             "SELECT {}, pdgid.description, pdgid.mode_number, pdgid.sort FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgid.parent_pdgid = ?2 AND pdgdata.edition = ?3 ORDER BY pdgid.sort ASC, pdgdata.sort ASC",
@@ -731,7 +856,7 @@ impl<'pdg> PdgParticle<'pdg> {
         );
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
-            .query_map([&data_type, &self.pdg_id, &edition], |row| {
+            .query_map([data_type, &self.pdg_id, &edition], |row| {
                 DecayData::from_row(self.db, row)
             })?
             .collect::<Result<Vec<_>, _>>()?)
@@ -866,6 +991,15 @@ struct BranchingFractionWithSort<'pdg> {
 pub enum BranchingFractionKind {
     Exclusive,
     Inclusive,
+}
+
+impl Display for BranchingFractionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            BranchingFractionKind::Exclusive => "Exclusive",
+            BranchingFractionKind::Inclusive => "Inclusive",
+        })
+    }
 }
 
 #[derive(Debug, Clone)]

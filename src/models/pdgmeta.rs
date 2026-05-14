@@ -1,6 +1,6 @@
 use rusqlite::Row;
 
-use crate::PdgId;
+use crate::{DataType, PdgId};
 
 #[derive(Clone, Debug)]
 pub struct PdgIdEntry {
@@ -9,7 +9,7 @@ pub struct PdgIdEntry {
     pub parent_pdg_id: Option<PdgId>,
     pub description: String,
     pub mode_number: Option<isize>,
-    pub data_type: String,
+    pub data_type: DataType,
     pub flags: String,
     pub year_added: Option<isize>,
     pub sort: isize,

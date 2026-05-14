@@ -1,13 +1,13 @@
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use comfy_table::{ColumnConstraint, ContentArrangement, Table, Width, presets::UTF8_FULL};
+use comfy_table::{ColumnConstraint, ContentArrangement, Width};
 use owo_colors::OwoColorize;
 use pdg_rs::{
-    AngularMomentum, BranchingFraction, BranchingFractionKind, BranchingRatio, Charge, DataEntry,
-    DecayStateExpansion, Isospin, Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg,
-    PdgError, PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle,
-    PdgReference, PdgText, TextSearchResult, TextSearchSource,
+    AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Parity, ParticleClass,
+    ParticleSearchQuery, ParticleType, Pdg, PdgError, PdgFootnote, PdgIdEntry, PdgMeasurement,
+    PdgMeasurementValue, PdgParticle, PdgReference, PdgText, TextSearchResult, TextSearchSource,
+    table,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -45,12 +45,6 @@ enum Commands {
     Show(ShowCommand),
     /// Search particles or text.
     Search(SearchCommand),
-    /// Search particles by name and particle properties.
-    Particle(ParticleCommand),
-    /// Look up a particle by string PDG ID, such as S008.
-    Pdgid(PdgIdCommand),
-    /// Search PDG descriptions and text entries.
-    Text(TextCommand),
     /// Reserved for the future terminal UI.
     Tui,
 }
@@ -63,14 +57,6 @@ struct ParticleCommand {
     filters: ParticleFilters,
     #[command(flatten)]
     output: ParticleOutput,
-}
-
-#[derive(Parser)]
-struct PdgIdCommand {
-    /// String PDG ID, such as S008.
-    pdg_id: String,
-    #[command(flatten)]
-    output: ShowOutput,
 }
 
 #[derive(Parser)]
@@ -111,82 +97,80 @@ struct TextCommand {
 
 #[derive(Parser, Clone)]
 struct ParticleFilters {
+    /// Filter by particle class.
     #[arg(long, value_parser = parse_class)]
     class: Option<ParticleClass>,
+    /// Filter by particle/antiparticle/self-conjugate type.
     #[arg(long = "type", value_parser = parse_particle_type)]
     particle_type: Option<ParticleType>,
+    /// Filter by electric charge, e.g. 0, +1, -1, +2/3.
     #[arg(long, allow_hyphen_values = true, value_parser = parse_charge)]
     charge: Option<Charge>,
+    /// Filter by isospin; accepts values like 0, 1/2, 1, 3/2, unknown, or missing.
     #[arg(long, value_parser = parse_isospin_filter)]
     isospin: Option<QuantumArg<Isospin>>,
+    /// Filter by G parity; accepts +, -, unknown, or missing.
     #[arg(long, value_parser = parse_parity_filter)]
     g_parity: Option<QuantumArg<Parity>>,
+    /// Filter by spin/angular momentum; accepts values like 0, 1/2, 1, 3/2, unknown, or missing.
     #[arg(long, value_parser = parse_spin_filter)]
     spin: Option<QuantumArg<AngularMomentum>>,
+    /// Filter by parity; accepts +, -, unknown, or missing.
     #[arg(long, value_parser = parse_parity_filter)]
     parity: Option<QuantumArg<Parity>>,
+    /// Filter by charge conjugation parity; accepts +, -, unknown, or missing.
     #[arg(long, value_parser = parse_parity_filter)]
     c_parity: Option<QuantumArg<Parity>>,
+    /// Filter by mass range in MeV, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
     mass: Option<(f64, f64)>,
+    /// Filter by width range in MeV, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
     width: Option<(f64, f64)>,
+    /// Filter by lifetime range in seconds, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
     lifetime: Option<(f64, f64)>,
+    /// Filter particles with an exact decay to comma-separated final states.
     #[arg(long, value_delimiter = ',')]
     decays_to: Vec<String>,
+    /// Filter particles with a decay containing comma-separated final states.
     #[arg(long, value_delimiter = ',')]
     decay_contains: Vec<String>,
+    /// Filter particles which can be produced from comma-separated initial states.
     #[arg(long, value_delimiter = ',')]
     decays_from: Vec<String>,
+    /// Control whether decay state names are expanded through particle families.
     #[arg(long, value_enum, default_value_t = DecayExpansionArg::Inclusive)]
     decay_expansion: DecayExpansionArg,
+    /// Look up a particle by Monte Carlo ID instead of name/search filters.
     #[arg(long)]
     mcid: Option<isize>,
 }
 
 #[derive(Parser, Clone)]
 struct ParticleOutput {
+    /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
+    /// Maximum number of results to print.
     #[arg(long, default_value_t = 20)]
     limit: usize,
+    /// Print all matching results.
     #[arg(long)]
     all: bool,
-    #[arg(long)]
-    with_counts: bool,
-    #[arg(long)]
-    details: bool,
-    #[arg(long)]
-    with_related: bool,
-    #[arg(long)]
-    with_decays: bool,
-    #[arg(long)]
-    with_ratios: bool,
-    #[arg(long)]
-    with_measurements: bool,
-    #[arg(long)]
-    with_texts: bool,
-    #[arg(long)]
-    with_footnotes: bool,
 }
 
 #[derive(Parser, Clone)]
 struct ShowOutput {
+    /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
+    /// Show only metadata, particle identity, headline properties, and direct data.
     #[arg(long)]
-    full: bool,
+    summary: bool,
+    /// Include data, text, measurements, references, and footnotes for related PDG IDs.
     #[arg(long)]
-    with_related: bool,
-    #[arg(long)]
-    with_decays: bool,
-    #[arg(long)]
-    with_measurements: bool,
-    #[arg(long)]
-    with_texts: bool,
-    #[arg(long)]
-    with_footnotes: bool,
+    related_details: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -240,6 +224,47 @@ struct ParticleDto {
     footnotes: Option<Vec<FootnoteDto>>,
 }
 
+impl TryFrom<&PdgParticle<'_>> for ParticleDto {
+    type Error = CliError;
+
+    fn try_from(particle: &PdgParticle<'_>) -> Result<Self, Self::Error> {
+        Ok(ParticleDto {
+            pdg_id: particle.pdg_id.clone(),
+            name: particle.name.clone(),
+            description: particle.description.clone(),
+            particle_type: particle.particle_type.to_string(),
+            particle_class: particle.particle_class.to_string(),
+            mcid: particle.mcid,
+            charge: particle.charge.to_string(),
+            isospin: particle.quantum_i.as_ref().map(ToString::to_string),
+            g_parity: particle.quantum_g.as_ref().map(ToString::to_string),
+            spin: particle.quantum_j.as_ref().map(ToString::to_string),
+            parity: particle.quantum_p.as_ref().map(ToString::to_string),
+            c_parity: particle.quantum_c.as_ref().map(ToString::to_string),
+            mass: particle
+                .mass()?
+                .as_ref()
+                .map(DataEntryDto::try_from)
+                .transpose()?,
+            lifetime: particle
+                .lifetime()?
+                .as_ref()
+                .map(DataEntryDto::try_from)
+                .transpose()?,
+            width: particle
+                .width()?
+                .as_ref()
+                .map(DataEntryDto::try_from)
+                .transpose()?,
+            related_particles: None,
+            branching_fractions: None,
+            branching_ratios: None,
+            texts: None,
+            footnotes: None,
+        })
+    }
+}
+
 #[derive(Serialize)]
 struct ParticleSummaryDto {
     pdg_id: String,
@@ -267,6 +292,30 @@ struct DataEntryDto {
     measurements: Option<Vec<MeasurementDto>>,
     texts: Option<Vec<TextDto>>,
     footnotes: Option<Vec<FootnoteDto>>,
+}
+
+impl TryFrom<&DataEntry<'_>> for DataEntryDto {
+    type Error = CliError;
+
+    fn try_from(entry: &DataEntry<'_>) -> Result<Self, Self::Error> {
+        Ok(DataEntryDto {
+            pdg_id: entry.pdgid.clone(),
+            edition: entry.edition.clone(),
+            value_type: entry.value_type.to_code().to_string(),
+            display: entry.to_string(),
+            unit: entry.unit_text.clone(),
+            comment: entry.comment.clone(),
+            value: entry.value,
+            error_positive: entry.error_positive,
+            error_negative: entry.error_negative,
+            confidence_level: entry.confidence_level,
+            limit_type: entry.limit_type.map(|limit| limit.to_string()),
+            in_summary_table: entry.in_summary_table,
+            measurements: None,
+            texts: None,
+            footnotes: None,
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -310,6 +359,31 @@ struct MeasurementDto {
     footnotes: Vec<FootnoteDto>,
 }
 
+impl From<&PdgMeasurement> for MeasurementDto {
+    fn from(measurement: &PdgMeasurement) -> MeasurementDto {
+        MeasurementDto {
+            pdg_id: measurement.pdg_id.clone(),
+            reference: ReferenceDto::from(&measurement.reference),
+            event_count: measurement.event_count.clone(),
+            confidence_level: measurement.confidence_level,
+            place: measurement.place.clone(),
+            technique: measurement.technique.clone(),
+            charge: measurement.charge.clone(),
+            comment: measurement.comment.clone(),
+            values: measurement
+                .values
+                .iter()
+                .map(MeasurementValueDto::from)
+                .collect(),
+            footnotes: measurement
+                .footnotes
+                .iter()
+                .map(FootnoteDto::from)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ReferenceDto {
     document_id: String,
@@ -318,6 +392,19 @@ struct ReferenceDto {
     doi: Option<String>,
     inspire_id: Option<String>,
     title: Option<String>,
+}
+
+impl From<&PdgReference> for ReferenceDto {
+    fn from(reference: &PdgReference) -> ReferenceDto {
+        ReferenceDto {
+            document_id: reference.document_id.clone(),
+            publication_name: reference.publication_name.clone(),
+            publication_year: reference.publication_year,
+            doi: reference.doi.clone(),
+            inspire_id: reference.inspire_id.clone(),
+            title: reference.title.clone(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -335,6 +422,24 @@ struct MeasurementValueDto {
     used_in_fit: bool,
 }
 
+impl From<&PdgMeasurementValue> for MeasurementValueDto {
+    fn from(value: &PdgMeasurementValue) -> MeasurementValueDto {
+        MeasurementValueDto {
+            column_name: value.column_name.clone(),
+            display: value.to_string(),
+            value: value.value,
+            error_positive: value.error_positive,
+            error_negative: value.error_negative,
+            stat_error_positive: value.stat_error_positive,
+            stat_error_negative: value.stat_error_negative,
+            syst_error_positive: value.syst_error_positive,
+            syst_error_negative: value.syst_error_negative,
+            used_in_average: value.used_in_average,
+            used_in_fit: value.used_in_fit,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct TextSearchDto {
     pdg_id: String,
@@ -346,6 +451,26 @@ struct TextSearchDto {
     score: f64,
 }
 
+impl From<&TextSearchResult> for TextSearchDto {
+    fn from(result: &TextSearchResult) -> TextSearchDto {
+        let (source, text_type, sort) = match &result.source {
+            TextSearchSource::Description => ("description".to_string(), None, None),
+            TextSearchSource::Text { text_type, sort } => {
+                ("text".to_string(), Some(text_type.clone()), Some(*sort))
+            }
+        };
+        TextSearchDto {
+            pdg_id: result.pdg_id.clone(),
+            source,
+            text_type,
+            sort,
+            text: result.text.clone(),
+            snippet: result.snippet.clone(),
+            score: result.score,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct TextDto {
     pdg_id: String,
@@ -354,12 +479,34 @@ struct TextDto {
     sort: isize,
 }
 
+impl From<&PdgText> for TextDto {
+    fn from(text: &PdgText) -> TextDto {
+        TextDto {
+            pdg_id: text.pdg_id.clone(),
+            text_type: text.text_type.clone(),
+            text: text.text.clone(),
+            sort: text.sort,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct FootnoteDto {
     pdg_id: Option<String>,
     index: Option<isize>,
     text: Option<String>,
     changebar: bool,
+}
+
+impl From<&PdgFootnote> for FootnoteDto {
+    fn from(footnote: &PdgFootnote) -> FootnoteDto {
+        FootnoteDto {
+            pdg_id: footnote.pdg_id.clone(),
+            index: footnote.index,
+            text: footnote.text.clone(),
+            changebar: footnote.changebar,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -387,6 +534,22 @@ struct PdgIdEntryDto {
     sort: isize,
 }
 
+impl From<&PdgIdEntry> for PdgIdEntryDto {
+    fn from(entry: &PdgIdEntry) -> PdgIdEntryDto {
+        PdgIdEntryDto {
+            id: entry.id,
+            pdg_id: entry.pdg_id.clone(),
+            parent_pdg_id: entry.parent_pdg_id.clone(),
+            description: entry.description.clone(),
+            mode_number: entry.mode_number,
+            data_type: entry.data_type.to_code().to_string(),
+            flags: entry.flags.clone(),
+            year_added: entry.year_added,
+            sort: entry.sort,
+        }
+    }
+}
+
 fn main() -> CliResult<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
@@ -398,12 +561,9 @@ fn main() -> CliResult<()> {
     match command {
         Commands::Show(command) => run_show(command.pdg_id, command.output),
         Commands::Search(command) => match command.command {
-            SearchCommands::Particles(command) => run_particle(command, ParticleMode::Search),
+            SearchCommands::Particles(command) => run_particle(command),
             SearchCommands::Text(command) => run_text(command),
         },
-        Commands::Particle(command) => run_particle(command, ParticleMode::Lookup),
-        Commands::Pdgid(command) => run_show(command.pdg_id, command.output),
-        Commands::Text(command) => run_text(command),
         Commands::Tui => Err(CliError::InvalidArgument(
             "TUI is not implemented yet; use `pdg show`, `pdg search particles`, or `pdg search text`"
                 .into(),
@@ -411,42 +571,34 @@ fn main() -> CliResult<()> {
     }
 }
 
-enum ParticleMode {
-    Lookup,
-    Search,
-}
+fn run_particle(command: ParticleCommand) -> CliResult<()> {
+    if command.query.is_none() && !has_particle_filters(&command.filters) {
+        ParticleCommand::command().print_help()?;
+        println!();
+        return Ok(());
+    }
 
-fn run_particle(command: ParticleCommand, mode: ParticleMode) -> CliResult<()> {
     let db = Pdg::open()?;
     let mut particles: Vec<_> = if let Some(mcid) = command.filters.mcid {
         db.mcid(mcid)?.into_iter().collect()
-    } else if matches!(mode, ParticleMode::Lookup)
-        && !has_particle_filters(&command.filters)
-        && command.query.is_some()
-    {
-        let query = command.query.as_deref().unwrap();
-        db.particle(query)?
-            .or(db.particle_by_pdg_id(query)?)
-            .into_iter()
-            .collect()
     } else {
         db.search_particles(build_query(command.query, &command.filters)?)?
     };
 
     particles = apply_limit(particles, command.output.limit, command.output.all);
-    output_particles(&db, particles, &command.output)
+    output_particles(particles, &command.output)
 }
 
 fn run_text(command: TextCommand) -> CliResult<()> {
     let db = Pdg::open()?;
     let results = apply_limit(db.search_text(command.query)?, command.limit, command.all);
     match command.format {
-        OutputFormat::Pretty => print_text_results(&results, command.show_full_text),
+        OutputFormat::Pretty => print_text_results(&db, &results, command.show_full_text),
         OutputFormat::Json => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &results.iter().map(text_search_dto).collect::<Vec<_>>()
+                    &results.iter().map(TextSearchDto::from).collect::<Vec<_>>()
                 )?
             );
             Ok(())
@@ -471,17 +623,13 @@ fn run_show(pdg_id: String, output: ShowOutput) -> CliResult<()> {
     }
 }
 
-fn output_particles(
-    db: &Pdg,
-    particles: Vec<PdgParticle<'_>>,
-    output: &ParticleOutput,
-) -> CliResult<()> {
+fn output_particles(particles: Vec<PdgParticle<'_>>, output: &ParticleOutput) -> CliResult<()> {
     match output.format {
-        OutputFormat::Pretty => print_particles(&particles, output),
+        OutputFormat::Pretty => print_particles(&particles),
         OutputFormat::Json => {
             let dtos = particles
                 .iter()
-                .map(|particle| particle_dto(db, particle, output))
+                .map(ParticleDto::try_from)
                 .collect::<CliResult<Vec<_>>>()?;
             println!("{}", serde_json::to_string_pretty(&dtos)?);
             Ok(())
@@ -495,38 +643,21 @@ fn print_show(
     particle: Option<&PdgParticle<'_>>,
     output: &ShowOutput,
 ) -> CliResult<()> {
-    println!(
-        "{}",
-        format!("{} {}", entry.pdg_id, entry.description).bold()
-    );
-    let mut meta = table();
-    meta.set_header(["Field", "Value"]);
-    meta.add_row(["PDG ID".to_string(), entry.pdg_id.clone()]);
-    meta.add_row(["Type".to_string(), entry.data_type.clone()]);
-    meta.add_row([
-        "Parent".to_string(),
-        entry.parent_pdg_id.clone().unwrap_or_default(),
-    ]);
-    meta.add_row([
-        "Mode".to_string(),
-        entry
-            .mode_number
-            .map(|mode| mode.to_string())
-            .unwrap_or_default(),
-    ]);
-    println!("{meta}");
+    let texts = if output.summary {
+        Vec::new()
+    } else {
+        db.texts_for(&entry.pdg_id)?
+    };
+    print_title(&format!("{} {}", entry.pdg_id, entry.description), &texts);
+    print_entry_summary(entry);
 
     if let Some(particle) = particle {
-        println!("{}", particle.to_string().cyan());
-        print_core_data(particle, true)?;
-        if output.full || output.with_related {
+        print_particle_identity(particle)?;
+        print_headline_properties(particle)?;
+        if !output.summary {
             print_related_particles(particle)?;
-            print_related_properties(particle)?;
-        }
-        if output.full || output.with_decays {
-            let particle_output = particle_output_for_show(output);
-            print_branching_fractions(particle, &particle_output)?;
-            print_branching_ratios(particle, &particle_output)?;
+            print_branching_fractions(particle)?;
+            print_branching_ratios(particle)?;
         }
     }
 
@@ -537,58 +668,164 @@ fn print_show(
     }
 
     let children = db.children_for_pdg_id(&entry.pdg_id)?;
-    if !children.is_empty() {
+    if !output.summary && !children.is_empty() {
         println!("{}", "Child PDG IDs".cyan());
         print_pdg_id_entries(&children);
     }
 
     let related_entries = db.mapped_entries_for_pdg_id(&entry.pdg_id)?;
-    if !related_entries.is_empty() {
+    if !output.summary && !related_entries.is_empty() {
         println!("{}", "Related PDG IDs".cyan());
         print_pdg_id_entries(&related_entries);
     }
 
-    if output.full || output.with_texts {
-        print_texts(&db.texts_for(&entry.pdg_id)?);
-    }
-    if output.full || output.with_footnotes {
-        print_footnotes(&db.footnotes_for(&entry.pdg_id)?);
-    }
-    if output.full || output.with_measurements {
+    if !output.summary {
         print_measurements_for(&entry.pdg_id, &db.measurements_for(&entry.pdg_id)?);
-        for related in related_entries {
-            print_measurements_for(&related.pdg_id, &db.measurements_for(&related.pdg_id)?);
+        print_footnotes(&db.footnotes_for(&entry.pdg_id)?);
+        if output.related_details {
+            print_related_details(db, &entry.pdg_id, particle, &children, &related_entries)?;
         }
     }
 
     Ok(())
 }
 
-fn print_related_properties(particle: &PdgParticle<'_>) -> CliResult<()> {
-    let related = particle.related_particles()?;
-    let mut rows = Vec::new();
-    for related_particle in related {
-        for (property, entry) in [
-            ("mass", related_particle.mass()?),
-            ("lifetime", related_particle.lifetime()?),
-            ("width", related_particle.width()?),
-        ] {
-            if let Some(entry) = entry {
-                rows.push([
-                    related_particle.name.clone(),
-                    property.to_string(),
-                    entry.to_string(),
-                    entry.pdgid,
-                ]);
+fn print_title(title: &str, texts: &[PdgText]) {
+    let mut table = table();
+    table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_width(100)
+        .set_constraints([ColumnConstraint::Boundaries {
+            lower: Width::Fixed(40),
+            upper: Width::Fixed(100),
+        }]);
+    table.add_row([title.to_string()]);
+    for text in texts {
+        if let Some(text) = &text.text {
+            if !text.is_empty() {
+                table.add_row([text.clone()]);
             }
         }
     }
+    println!("{table}");
+}
+
+fn print_entry_summary(entry: &PdgIdEntry) {
+    let mut headers = vec!["PDG ID".to_string(), "Type".to_string()];
+    let mut values = vec![entry.pdg_id.clone(), entry.data_type.to_string()];
+    if let Some(parent) = &entry.parent_pdg_id {
+        if !parent.is_empty() {
+            headers.push("Parent".to_string());
+            values.push(parent.clone());
+        }
+    }
+    if let Some(mode) = entry.mode_number {
+        headers.push("Mode".to_string());
+        values.push(mode.to_string());
+    }
+
+    let mut meta = table();
+    meta.set_header(headers);
+    meta.add_row(values);
+    println!("{meta}");
+}
+
+fn print_particle_identity(particle: &PdgParticle<'_>) -> CliResult<()> {
+    println!("{}", "Particle".cyan());
+    println!("{}", PdgParticle::make_table(&[particle.clone()], false)?);
+    Ok(())
+}
+
+fn print_related_details(
+    db: &Pdg,
+    root_pdg_id: &str,
+    particle: Option<&PdgParticle<'_>>,
+    children: &[PdgIdEntry],
+    related_entries: &[PdgIdEntry],
+) -> CliResult<()> {
+    let ids = collect_detail_pdg_ids(db, root_pdg_id, particle, children, related_entries)?;
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    println!("{}", "Related details".cyan());
+    for pdg_id in ids {
+        let Some(entry) = db.pdg_id(&pdg_id)? else {
+            continue;
+        };
+        let data = db.data_for(&entry.pdg_id)?;
+        let texts = db.texts_for(&entry.pdg_id)?;
+        let measurements = db.measurements_for(&entry.pdg_id)?;
+        let footnotes = db.footnotes_for(&entry.pdg_id)?;
+        if data.is_empty() && texts.is_empty() && measurements.is_empty() && footnotes.is_empty() {
+            continue;
+        }
+
+        print_title(&format!("{} {}", entry.pdg_id, entry.description), &texts);
+        print_entry_summary(&entry);
+        if !data.is_empty() {
+            println!("{}", "Data".cyan());
+            print_data_entries(&data);
+        }
+        print_measurements_for(&entry.pdg_id, &measurements);
+        print_footnotes(&footnotes);
+    }
+    Ok(())
+}
+
+fn collect_detail_pdg_ids(
+    db: &Pdg,
+    root_pdg_id: &str,
+    particle: Option<&PdgParticle<'_>>,
+    children: &[PdgIdEntry],
+    related_entries: &[PdgIdEntry],
+) -> CliResult<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    let mut stack = Vec::new();
+
+    for entry in children.iter().chain(related_entries.iter()) {
+        stack.push(entry.pdg_id.clone());
+    }
+
+    if let Some(particle) = particle {
+        for decay in particle.branching_fractions()? {
+            stack.push(decay.pdg_id);
+            for related in decay.related_data {
+                stack.push(related.pdg_id);
+            }
+        }
+        for ratio in particle.branching_ratios()? {
+            stack.push(ratio.pdg_id);
+        }
+    }
+
+    while let Some(pdg_id) = stack.pop() {
+        if pdg_id == root_pdg_id || !seen.insert(pdg_id.clone()) {
+            continue;
+        }
+        ordered.push(pdg_id.clone());
+        for child in db.children_for_pdg_id(&pdg_id)? {
+            stack.push(child.pdg_id);
+        }
+        for related in db.mapped_entries_for_pdg_id(&pdg_id)? {
+            stack.push(related.pdg_id);
+        }
+    }
+
+    Ok(ordered)
+}
+
+fn print_headline_properties(particle: &PdgParticle<'_>) -> CliResult<()> {
+    let rows = particle.headline_property_rows()?;
+
     if rows.is_empty() {
         return Ok(());
     }
-    println!("{}", "Related/family properties".cyan());
+
+    println!("{}", "Properties".cyan());
     let mut table = table();
-    table.set_header(["Particle", "Property", "Value", "Source PDG ID"]);
+    table.set_header(["Property", "Value", "Source PDG ID", "Source"]);
     for row in rows {
         table.add_row(row);
     }
@@ -606,6 +843,10 @@ fn print_data_entries(entries: &[DataEntry<'_>]) {
         ColumnConstraint::Boundaries {
             lower: Width::Fixed(30),
             upper: Width::Fixed(72),
+        },
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(16),
+            upper: Width::Fixed(32),
         },
     ]);
     for entry in entries {
@@ -633,7 +874,7 @@ fn print_pdg_id_entries(entries: &[PdgIdEntry]) {
     for entry in entries {
         table.add_row([
             entry.pdg_id.clone(),
-            entry.data_type.clone(),
+            entry.data_type.to_string(),
             entry.description.clone(),
         ]);
     }
@@ -646,62 +887,49 @@ fn show_dto(
     particle: Option<&PdgParticle<'_>>,
     output: &ShowOutput,
 ) -> CliResult<ShowDto> {
-    let particle_output = particle_output_for_show(output);
     Ok(ShowDto {
-        entry: pdg_id_entry_dto(entry),
-        particle: particle
-            .map(|particle| particle_dto(db, particle, &particle_output))
-            .transpose()?,
+        entry: PdgIdEntryDto::from(entry),
+        particle: particle.map(ParticleDto::try_from).transpose()?,
         data: db
             .data_for(&entry.pdg_id)?
             .iter()
-            .map(|entry| data_entry_dto(entry, &particle_output))
+            .map(DataEntryDto::try_from)
             .collect::<CliResult<Vec<_>>>()?,
-        children: db
-            .children_for_pdg_id(&entry.pdg_id)?
-            .iter()
-            .map(pdg_id_entry_dto)
-            .collect(),
-        related_entries: db
-            .mapped_entries_for_pdg_id(&entry.pdg_id)?
-            .iter()
-            .map(pdg_id_entry_dto)
-            .collect(),
-        texts: (output.full || output.with_texts)
+        children: if output.summary {
+            Vec::new()
+        } else {
+            db.children_for_pdg_id(&entry.pdg_id)?
+                .iter()
+                .map(PdgIdEntryDto::from)
+                .collect()
+        },
+        related_entries: if output.summary {
+            Vec::new()
+        } else {
+            db.mapped_entries_for_pdg_id(&entry.pdg_id)?
+                .iter()
+                .map(PdgIdEntryDto::from)
+                .collect()
+        },
+        texts: (!output.summary)
             .then(|| {
                 db.texts_for(&entry.pdg_id)
-                    .map(|texts| texts.iter().map(text_dto).collect())
+                    .map(|texts| texts.iter().map(TextDto::from).collect())
             })
             .transpose()?,
-        footnotes: (output.full || output.with_footnotes)
+        footnotes: (!output.summary)
             .then(|| {
                 db.footnotes_for(&entry.pdg_id)
-                    .map(|footnotes| footnotes.iter().map(footnote_dto).collect())
+                    .map(|footnotes| footnotes.iter().map(FootnoteDto::from).collect())
             })
             .transpose()?,
-        measurements: (output.full || output.with_measurements)
+        measurements: (!output.summary)
             .then(|| {
                 db.measurements_for(&entry.pdg_id)
-                    .map(|measurements| measurements.iter().map(measurement_dto).collect())
+                    .map(|measurements| measurements.iter().map(MeasurementDto::from).collect())
             })
             .transpose()?,
     })
-}
-
-fn particle_output_for_show(output: &ShowOutput) -> ParticleOutput {
-    ParticleOutput {
-        format: output.format,
-        limit: 20,
-        all: false,
-        with_counts: false,
-        details: true,
-        with_related: output.full || output.with_related,
-        with_decays: output.full || output.with_decays,
-        with_ratios: output.full || output.with_decays,
-        with_measurements: output.full || output.with_measurements,
-        with_texts: output.full || output.with_texts,
-        with_footnotes: output.full || output.with_footnotes,
-    }
 }
 
 fn build_query(query: Option<String>, filters: &ParticleFilters) -> CliResult<ParticleSearchQuery> {
@@ -797,149 +1025,39 @@ fn has_particle_filters(filters: &ParticleFilters) -> bool {
         || !filters.decays_to.is_empty()
         || !filters.decay_contains.is_empty()
         || !filters.decays_from.is_empty()
+        || filters.mcid.is_some()
 }
 
-fn table() -> Table {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::DynamicFullWidth);
-    table
-}
-
-fn print_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> CliResult<()> {
+fn print_particles(particles: &[PdgParticle<'_>]) -> CliResult<()> {
     if particles.is_empty() {
         println!("{}", "No particles found.".yellow());
         return Ok(());
     }
 
-    if !output.details
-        && !output.with_related
-        && !output.with_decays
-        && !output.with_ratios
-        && !output.with_measurements
-        && !output.with_texts
-        && !output.with_footnotes
-    {
-        let mut table = table();
-        if output.with_counts {
-            table.set_header([
-                "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
-                "Decays", "Ratios", "Quantum",
-            ]);
-        } else {
-            table.set_header([
-                "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
-                "Quantum",
-            ]);
-        }
-        for particle in particles {
-            let mut row = vec![
-                particle.pdg_id.clone(),
-                particle.name.clone(),
-                particle.particle_class.to_string(),
-                particle.particle_type.to_string(),
-                particle.charge.to_string(),
-                particle
-                    .mcid
-                    .map(|value| value.to_string())
-                    .unwrap_or_default(),
-                particle
-                    .mass()?
-                    .map(|entry| entry.to_string())
-                    .unwrap_or_default(),
-                particle
-                    .lifetime()?
-                    .map(|entry| entry.to_string())
-                    .unwrap_or_default(),
-                particle
-                    .width()?
-                    .map(|entry| entry.to_string())
-                    .unwrap_or_default(),
-            ];
-            if output.with_counts {
-                row.push(particle.branching_fractions()?.len().to_string());
-                row.push(particle.branching_ratios()?.len().to_string());
-            }
-            row.push(quantum_summary(particle));
-            table.add_row(row);
-        }
-        println!("{table}");
-        return Ok(());
-    }
-
-    for (index, particle) in particles.iter().enumerate() {
-        if index > 0 {
-            println!();
-        }
-        println!("{}", particle.to_string().bold());
-        print_core_data(particle, true)?;
-
-        if output.with_related {
-            print_related_particles(particle)?;
-        }
-        if output.with_decays {
-            print_branching_fractions(particle, output)?;
-        }
-        if output.with_ratios {
-            print_branching_ratios(particle, output)?;
-        }
-        if output.with_texts {
-            print_texts(&particle.texts()?);
-        }
-        if output.with_footnotes {
-            print_footnotes(&particle.footnotes()?);
-        }
-    }
-    Ok(())
-}
-
-fn print_core_data(particle: &PdgParticle<'_>, show_empty: bool) -> CliResult<()> {
-    let mut table = table();
-    table.set_header(["Property", "Value", "PDG ID"]);
-    let mut rows = 0;
-    if let Some(mass) = particle.mass()? {
-        table.add_row(["mass".to_string(), mass.to_string(), mass.pdgid]);
-        rows += 1;
-    }
-    if let Some(lifetime) = particle.lifetime()? {
-        table.add_row(["lifetime".to_string(), lifetime.to_string(), lifetime.pdgid]);
-        rows += 1;
-    }
-    if let Some(width) = particle.width()? {
-        table.add_row(["width".to_string(), width.to_string(), width.pdgid]);
-        rows += 1;
-    }
-    if rows == 0 {
-        if show_empty {
-            println!("{}", "No direct mass/lifetime/width data.".yellow());
-        }
-        return Ok(());
-    }
+    let table = PdgParticle::make_table(particles, true)?;
     println!("{table}");
     Ok(())
 }
 
 fn print_related_particles(particle: &PdgParticle<'_>) -> CliResult<()> {
-    let related = particle.related_particles()?;
-    if related.is_empty() {
+    let particles = particle.related_particles()?;
+    if particles.is_empty() {
         return Ok(());
     }
     println!("{}", "Related particles".cyan());
-    for related_particle in related {
-        println!("  {related_particle}");
-    }
+    let table = PdgParticle::make_table(&particles, true)?;
+    println!("{table}");
     Ok(())
 }
 
-fn print_branching_fractions(particle: &PdgParticle<'_>, output: &ParticleOutput) -> CliResult<()> {
+fn print_branching_fractions(particle: &PdgParticle<'_>) -> CliResult<()> {
     let decays = particle.branching_fractions()?;
     if decays.is_empty() {
         return Ok(());
     }
     println!("{}", "Branching fractions".cyan());
     let mut table = table();
-    table.set_header(["PDG ID", "Kind", "Value", "Description"]);
+    table.set_header(["PDG ID", "Kind", "Value", "Description", "Related PDG IDs"]);
     table.set_constraints([
         ColumnConstraint::ContentWidth,
         ColumnConstraint::ContentWidth,
@@ -950,11 +1068,6 @@ fn print_branching_fractions(particle: &PdgParticle<'_>, output: &ParticleOutput
         },
     ]);
     for decay in &decays {
-        let measurements = if output.with_measurements {
-            decay.measurements()?.len()
-        } else {
-            0
-        };
         let related_ids = decay
             .related_data
             .iter()
@@ -963,42 +1076,17 @@ fn print_branching_fractions(particle: &PdgParticle<'_>, output: &ParticleOutput
             .join(", ");
         table.add_row([
             decay.pdg_id.clone(),
-            branching_kind(decay.kind).to_string(),
+            decay.kind.to_string(),
             decay.value.to_string(),
-            if output.with_measurements || !related_ids.is_empty() {
-                format!(
-                    "{}{}{}",
-                    decay.description,
-                    if output.with_measurements {
-                        format!(" | measurements: {measurements}")
-                    } else {
-                        String::new()
-                    },
-                    if related_ids.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" | related: {related_ids}")
-                    }
-                )
-            } else {
-                decay.description.clone()
-            },
+            decay.description.clone(),
+            related_ids,
         ]);
     }
     println!("{table}");
-
-    if output.with_measurements {
-        for decay in decays {
-            print_measurements_for(&decay.pdg_id, &decay.measurements()?);
-            for related in &decay.related_data {
-                print_measurements_for(&related.pdg_id, &related.measurements()?);
-            }
-        }
-    }
     Ok(())
 }
 
-fn print_branching_ratios(particle: &PdgParticle<'_>, output: &ParticleOutput) -> CliResult<()> {
+fn print_branching_ratios(particle: &PdgParticle<'_>) -> CliResult<()> {
     let ratios = particle.branching_ratios()?;
     if ratios.is_empty() {
         return Ok(());
@@ -1022,36 +1110,39 @@ fn print_branching_ratios(particle: &PdgParticle<'_>, output: &ParticleOutput) -
         ]);
     }
     println!("{table}");
-
-    if output.with_measurements {
-        for ratio in ratios {
-            print_measurements_for(&ratio.pdg_id, &ratio.measurements()?);
-        }
-    }
     Ok(())
 }
 
-fn print_text_results(results: &[TextSearchResult], show_full_text: bool) -> CliResult<()> {
+fn print_text_results(
+    db: &Pdg,
+    results: &[TextSearchResult],
+    show_full_text: bool,
+) -> CliResult<()> {
     if results.is_empty() {
         println!("{}", "No text results found.".yellow());
         return Ok(());
     }
     let mut table = table();
-    table.set_header(["PDG ID", "Source", "Score", "Text"]);
+    table.set_header(["PDG ID", "Title", "Match"]);
     table.set_constraints([
         ColumnConstraint::ContentWidth,
-        ColumnConstraint::ContentWidth,
-        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(24),
+            upper: Width::Fixed(46),
+        },
         ColumnConstraint::Boundaries {
             lower: Width::Fixed(35),
             upper: Width::Fixed(72),
         },
     ]);
     for result in results {
+        let title = db
+            .pdg_id(&result.pdg_id)?
+            .map(|entry| entry.description)
+            .unwrap_or_default();
         table.add_row([
             result.pdg_id.clone(),
-            source_label(&result.source),
-            format!("{:.3}", result.score),
+            title,
             if show_full_text {
                 result.text.clone()
             } else {
@@ -1063,27 +1154,17 @@ fn print_text_results(results: &[TextSearchResult], show_full_text: bool) -> Cli
     Ok(())
 }
 
-fn print_texts(texts: &[PdgText]) {
-    for text in texts {
-        println!(
-            "{} {}: {}",
-            text.pdg_id.cyan(),
-            text.text_type,
-            text.text.clone().unwrap_or_default()
-        );
-    }
-}
-
 fn print_footnotes(footnotes: &[PdgFootnote]) {
+    if footnotes.is_empty() {
+        return;
+    }
+    println!("{}", "Footnotes".cyan());
     for footnote in footnotes {
-        println!(
-            "[{}] {}",
-            footnote
-                .index
-                .map(|index| index.to_string())
-                .unwrap_or_default(),
-            footnote.text.clone().unwrap_or_default()
-        );
+        let index = footnote
+            .index
+            .map(|index| index.to_string())
+            .unwrap_or_default();
+        println!("[{}] {}", index, footnote.text.clone().unwrap_or_default());
     }
 }
 
@@ -1091,20 +1172,82 @@ fn print_measurements(measurements: &[PdgMeasurement]) {
     if measurements.is_empty() {
         return;
     }
-    println!("{}", "Measurements".cyan());
+    let mut table = table();
+    table.set_header([
+        "Reference",
+        "Value(s)",
+        "Year",
+        "Publication",
+        "DOI",
+        "INSPIRE",
+        "Title",
+        "Comment",
+    ]);
+    table.set_constraints([
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(18),
+            upper: Width::Fixed(32),
+        },
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(10),
+            upper: Width::Fixed(18),
+        },
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(12),
+            upper: Width::Fixed(28),
+        },
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(10),
+            upper: Width::Fixed(18),
+        },
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(18),
+            upper: Width::Fixed(42),
+        },
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(14),
+            upper: Width::Fixed(28),
+        },
+    ]);
     for measurement in measurements {
-        let reference = reference_label(&measurement.reference);
         let values = measurement
             .values
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  {:<24} {}", measurement.reference.document_id, reference);
-        if !values.is_empty() {
-            println!("  {:<24} {}", "", values);
-        }
+        table.add_row([
+            measurement.reference.document_id.clone(),
+            values,
+            measurement
+                .reference
+                .publication_year
+                .map(|year| year.to_string())
+                .unwrap_or_default(),
+            measurement
+                .reference
+                .publication_name
+                .clone()
+                .unwrap_or_default(),
+            measurement
+                .reference
+                .doi
+                .clone()
+                .map(|doi| format!("https://doi.org/{}", doi))
+                .unwrap_or_default(),
+            measurement
+                .reference
+                .inspire_id
+                .clone()
+                .map(|id| format!("https://inspirehep.net/literature/{}", id))
+                .unwrap_or_default(),
+            measurement.reference.title.clone().unwrap_or_default(),
+            measurement.comment.clone().unwrap_or_default(),
+        ]);
     }
+    println!("{table}");
 }
 
 fn print_measurements_for(pdg_id: &str, measurements: &[PdgMeasurement]) {
@@ -1113,325 +1256,6 @@ fn print_measurements_for(pdg_id: &str, measurements: &[PdgMeasurement]) {
     }
     println!("{}", format!("Measurements for {pdg_id}").cyan());
     print_measurements(measurements);
-}
-
-fn particle_dto(
-    _db: &Pdg,
-    particle: &PdgParticle<'_>,
-    output: &ParticleOutput,
-) -> CliResult<ParticleDto> {
-    Ok(ParticleDto {
-        pdg_id: particle.pdg_id.clone(),
-        name: particle.name.clone(),
-        description: particle.description.clone(),
-        particle_type: particle.particle_type.to_string(),
-        particle_class: particle.particle_class.to_string(),
-        mcid: particle.mcid,
-        charge: particle.charge.to_string(),
-        isospin: particle.quantum_i.as_ref().map(ToString::to_string),
-        g_parity: particle.quantum_g.as_ref().map(ToString::to_string),
-        spin: particle.quantum_j.as_ref().map(ToString::to_string),
-        parity: particle.quantum_p.as_ref().map(ToString::to_string),
-        c_parity: particle.quantum_c.as_ref().map(ToString::to_string),
-        mass: particle
-            .mass()?
-            .map(|entry| data_entry_dto(&entry, output))
-            .transpose()?,
-        lifetime: particle
-            .lifetime()?
-            .map(|entry| data_entry_dto(&entry, output))
-            .transpose()?,
-        width: particle
-            .width()?
-            .map(|entry| data_entry_dto(&entry, output))
-            .transpose()?,
-        related_particles: output
-            .with_related
-            .then(|| {
-                particle
-                    .related_particles()
-                    .map(|particles| particles.iter().map(summary_dto).collect::<Vec<_>>())
-            })
-            .transpose()?,
-        branching_fractions: output
-            .with_decays
-            .then(|| {
-                particle.branching_fractions().and_then(|decays| {
-                    decays
-                        .iter()
-                        .map(|decay| branching_fraction_dto(decay, output))
-                        .collect::<CliResult<Vec<_>>>()
-                        .map_err(|err| PdgError::Custom(err.to_string()))
-                })
-            })
-            .transpose()?,
-        branching_ratios: output
-            .with_ratios
-            .then(|| {
-                particle.branching_ratios().and_then(|ratios| {
-                    ratios
-                        .iter()
-                        .map(|ratio| branching_ratio_dto(ratio, output))
-                        .collect::<CliResult<Vec<_>>>()
-                        .map_err(|err| PdgError::Custom(err.to_string()))
-                })
-            })
-            .transpose()?,
-        texts: output
-            .with_texts
-            .then(|| {
-                particle
-                    .texts()
-                    .map(|texts| texts.iter().map(text_dto).collect())
-            })
-            .transpose()?,
-        footnotes: output
-            .with_footnotes
-            .then(|| {
-                particle
-                    .footnotes()
-                    .map(|footnotes| footnotes.iter().map(footnote_dto).collect())
-            })
-            .transpose()?,
-    })
-}
-
-fn summary_dto(particle: &PdgParticle<'_>) -> ParticleSummaryDto {
-    ParticleSummaryDto {
-        pdg_id: particle.pdg_id.clone(),
-        name: particle.name.clone(),
-        particle_type: particle.particle_type.to_string(),
-        particle_class: particle.particle_class.to_string(),
-        mcid: particle.mcid,
-        charge: particle.charge.to_string(),
-    }
-}
-
-fn data_entry_dto(entry: &DataEntry<'_>, output: &ParticleOutput) -> CliResult<DataEntryDto> {
-    Ok(DataEntryDto {
-        pdg_id: entry.pdgid.clone(),
-        edition: entry.edition.clone(),
-        value_type: entry.value_type.to_string(),
-        display: entry.to_string(),
-        unit: entry.unit_text.clone(),
-        comment: entry.comment.clone(),
-        value: entry.value,
-        error_positive: entry.error_positive,
-        error_negative: entry.error_negative,
-        confidence_level: entry.confidence_level,
-        limit_type: entry.limit_type.map(|limit| limit.to_string()),
-        in_summary_table: entry.in_summary_table,
-        measurements: output
-            .with_measurements
-            .then(|| {
-                entry
-                    .measurements()
-                    .map(|measurements| measurements.iter().map(measurement_dto).collect())
-            })
-            .transpose()?,
-        texts: output
-            .with_texts
-            .then(|| {
-                entry
-                    .texts()
-                    .map(|texts| texts.iter().map(text_dto).collect())
-            })
-            .transpose()?,
-        footnotes: output
-            .with_footnotes
-            .then(|| {
-                entry
-                    .footnotes()
-                    .map(|footnotes| footnotes.iter().map(footnote_dto).collect())
-            })
-            .transpose()?,
-    })
-}
-
-fn branching_fraction_dto(
-    decay: &BranchingFraction<'_>,
-    output: &ParticleOutput,
-) -> CliResult<BranchingFractionDto> {
-    Ok(BranchingFractionDto {
-        pdg_id: decay.pdg_id.clone(),
-        description: decay.description.clone(),
-        mode_number: decay.mode_number,
-        kind: branching_kind(decay.kind).to_string(),
-        value: data_entry_dto(&decay.value, output)?,
-        related_data: decay
-            .related_data
-            .iter()
-            .map(|related| {
-                Ok(RelatedDataDto {
-                    pdg_id: related.pdg_id.clone(),
-                    description: related.description.clone(),
-                    data_type: related.data_type.to_string(),
-                    mode_number: related.mode_number,
-                    value: data_entry_dto(&related.value, output)?,
-                })
-            })
-            .collect::<CliResult<Vec<_>>>()?,
-    })
-}
-
-fn branching_ratio_dto(
-    ratio: &BranchingRatio<'_>,
-    output: &ParticleOutput,
-) -> CliResult<BranchingRatioDto> {
-    Ok(BranchingRatioDto {
-        pdg_id: ratio.pdg_id.clone(),
-        description: ratio.description.clone(),
-        mode_number: ratio.mode_number,
-        value: data_entry_dto(&ratio.value, output)?,
-    })
-}
-
-fn measurement_dto(measurement: &PdgMeasurement) -> MeasurementDto {
-    MeasurementDto {
-        pdg_id: measurement.pdg_id.clone(),
-        reference: reference_dto(&measurement.reference),
-        event_count: measurement.event_count.clone(),
-        confidence_level: measurement.confidence_level,
-        place: measurement.place.clone(),
-        technique: measurement.technique.clone(),
-        charge: measurement.charge.clone(),
-        comment: measurement.comment.clone(),
-        values: measurement
-            .values
-            .iter()
-            .map(measurement_value_dto)
-            .collect(),
-        footnotes: measurement.footnotes.iter().map(footnote_dto).collect(),
-    }
-}
-
-fn reference_dto(reference: &PdgReference) -> ReferenceDto {
-    ReferenceDto {
-        document_id: reference.document_id.clone(),
-        publication_name: reference.publication_name.clone(),
-        publication_year: reference.publication_year,
-        doi: reference.doi.clone(),
-        inspire_id: reference.inspire_id.clone(),
-        title: reference.title.clone(),
-    }
-}
-
-fn measurement_value_dto(value: &PdgMeasurementValue) -> MeasurementValueDto {
-    MeasurementValueDto {
-        column_name: value.column_name.clone(),
-        display: value.to_string(),
-        value: value.value,
-        error_positive: value.error_positive,
-        error_negative: value.error_negative,
-        stat_error_positive: value.stat_error_positive,
-        stat_error_negative: value.stat_error_negative,
-        syst_error_positive: value.syst_error_positive,
-        syst_error_negative: value.syst_error_negative,
-        used_in_average: value.used_in_average,
-        used_in_fit: value.used_in_fit,
-    }
-}
-
-fn text_search_dto(result: &TextSearchResult) -> TextSearchDto {
-    let (source, text_type, sort) = match &result.source {
-        TextSearchSource::Description => ("description".to_string(), None, None),
-        TextSearchSource::Text { text_type, sort } => {
-            ("text".to_string(), Some(text_type.clone()), Some(*sort))
-        }
-    };
-    TextSearchDto {
-        pdg_id: result.pdg_id.clone(),
-        source,
-        text_type,
-        sort,
-        text: result.text.clone(),
-        snippet: result.snippet.clone(),
-        score: result.score,
-    }
-}
-
-fn text_dto(text: &PdgText) -> TextDto {
-    TextDto {
-        pdg_id: text.pdg_id.clone(),
-        text_type: text.text_type.clone(),
-        text: text.text.clone(),
-        sort: text.sort,
-    }
-}
-
-fn pdg_id_entry_dto(entry: &PdgIdEntry) -> PdgIdEntryDto {
-    PdgIdEntryDto {
-        id: entry.id,
-        pdg_id: entry.pdg_id.clone(),
-        parent_pdg_id: entry.parent_pdg_id.clone(),
-        description: entry.description.clone(),
-        mode_number: entry.mode_number,
-        data_type: entry.data_type.clone(),
-        flags: entry.flags.clone(),
-        year_added: entry.year_added,
-        sort: entry.sort,
-    }
-}
-
-fn footnote_dto(footnote: &PdgFootnote) -> FootnoteDto {
-    FootnoteDto {
-        pdg_id: footnote.pdg_id.clone(),
-        index: footnote.index,
-        text: footnote.text.clone(),
-        changebar: footnote.changebar,
-    }
-}
-
-fn quantum_summary(particle: &PdgParticle<'_>) -> String {
-    [
-        particle
-            .quantum_i
-            .as_ref()
-            .map(|value| format!("I={value}")),
-        particle
-            .quantum_g
-            .as_ref()
-            .map(|value| format!("G={value}")),
-        particle
-            .quantum_j
-            .as_ref()
-            .map(|value| format!("J={value}")),
-        particle
-            .quantum_p
-            .as_ref()
-            .map(|value| format!("P={value}")),
-        particle
-            .quantum_c
-            .as_ref()
-            .map(|value| format!("C={value}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(", ")
-}
-
-fn source_label(source: &TextSearchSource) -> String {
-    match source {
-        TextSearchSource::Description => "description".to_string(),
-        TextSearchSource::Text { text_type, sort } => format!("text:{text_type}:{sort}"),
-    }
-}
-
-fn reference_label(reference: &PdgReference) -> String {
-    reference
-        .doi
-        .clone()
-        .or(reference.inspire_id.clone())
-        .or(reference.title.clone())
-        .unwrap_or_default()
-}
-
-fn branching_kind(kind: BranchingFractionKind) -> &'static str {
-    match kind {
-        BranchingFractionKind::Exclusive => "exclusive",
-        BranchingFractionKind::Inclusive => "inclusive",
-    }
 }
 
 fn parse_class(value: &str) -> Result<ParticleClass, String> {

@@ -1,3 +1,4 @@
+use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
 
@@ -637,7 +638,7 @@ impl Pdg {
         &self,
         data_type: DataType,
     ) -> PdgResult<std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>> {
-        let data_type = data_type.to_string();
+        let data_type = data_type.to_code();
         let sql = format!(
             "SELECT {}, pdgid.parent_pdgid FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgdata.edition = ?2",
             DataEntry::COLUMNS
@@ -881,6 +882,14 @@ fn fts_query(query: String) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" ")
     })
+}
+
+pub fn table() -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::DynamicFullWidth);
+    table
 }
 
 #[cfg(test)]
