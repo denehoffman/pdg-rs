@@ -1075,7 +1075,9 @@ mod tests {
     #[test]
     fn queries_particles_by_class() {
         let db = Pdg::open().unwrap();
-        let leptons = db.particles_by_class(ParticleClass::Lepton).unwrap();
+        let leptons = db
+            .search_particles(ParticleSearchQuery::new().class(ParticleClass::Lepton))
+            .unwrap();
 
         assert!(
             leptons
@@ -1091,8 +1093,20 @@ mod tests {
     #[test]
     fn searches_particles_by_class() {
         let db = Pdg::open().unwrap();
-        let pion_mesons = db.search_by_class("pi", ParticleClass::Meson).unwrap();
-        let pion_baryons = db.search_by_class("pi", ParticleClass::Baryon).unwrap();
+        let pion_mesons = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .name_contains("pi")
+                    .class(ParticleClass::Meson),
+            )
+            .unwrap();
+        let pion_baryons = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .name_contains("pi")
+                    .class(ParticleClass::Baryon),
+            )
+            .unwrap();
 
         assert!(!pion_mesons.is_empty());
         assert!(
@@ -1751,7 +1765,10 @@ mod tests {
     #[test]
     fn branching_ratios_include_errors() {
         let db = Pdg::open().unwrap();
-        let sigma = db.search("Sigma(2010)").unwrap().remove(0);
+        let sigma = db
+            .search_particles(ParticleSearchQuery::new().name_contains("Sigma(2010)"))
+            .unwrap()
+            .remove(0);
 
         let branching_ratios = sigma.branching_ratios().unwrap();
         let ratio = branching_ratios

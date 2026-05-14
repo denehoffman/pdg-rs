@@ -2,6 +2,22 @@ use rusqlite::Row;
 
 use crate::PdgId;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextSearchSource {
+    Description,
+    Text { text_type: String, sort: isize },
+}
+
+#[derive(Clone, Debug)]
+pub struct TextSearchResult {
+    pub pdg_id: PdgId,
+    pub source: TextSearchSource,
+    pub text: String,
+    pub snippet: String,
+    pub score: f64,
+    pub pdg_text: Option<PdgText>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PdgText {
     pub pdg_id: PdgId,

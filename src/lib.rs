@@ -39,11 +39,35 @@ impl Pdg {
     pub fn open() -> PdgResult<Self> {
         let mut conn = Connection::open_in_memory()?;
         conn.deserialize_bytes(MAIN_DB, PDG_BYTES)?;
-        Ok(Self { conn })
+        let pdg = Self { conn };
+        pdg.initialize_text_search()?;
+        Ok(pdg)
     }
 
     pub fn db(&self) -> &Connection {
         &self.conn
+    }
+
+    fn initialize_text_search(&self) -> PdgResult<()> {
+        self.conn.execute_batch(
+            "CREATE VIRTUAL TABLE temp.pdg_text_search USING fts5(
+                body,
+                source UNINDEXED,
+                pdgid UNINDEXED,
+                text_type UNINDEXED,
+                sort UNINDEXED,
+                tokenize = 'unicode61'
+            );
+            INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
+                SELECT description, 'description', pdgid, NULL, sort
+                FROM pdgid
+                WHERE description != '';
+            INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
+                SELECT text, 'text', pdgid, type, sort
+                FROM pdgtext
+                WHERE text IS NOT NULL AND text != '';",
+        )?;
+        Ok(())
     }
 
     pub fn particle(&self, name: impl Into<String>) -> PdgResult<Option<PdgParticle<'_>>> {
@@ -59,16 +83,60 @@ impl Pdg {
             .optional()?)
     }
 
-    pub fn search(&self, name: impl Into<String>) -> PdgResult<Vec<PdgParticle<'_>>> {
-        let name = name.into();
-        let sql = format!(
-            "SELECT {} FROM pdgparticle {} WHERE name LIKE '%' || ?1 || '%'",
-            Self::PARTICLE_COLUMNS,
-            Self::PARTICLE_JOIN
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
+    pub fn search_text(&self, query: impl Into<String>) -> PdgResult<Vec<TextSearchResult>> {
+        let Some(query) = fts_query(query.into()) else {
+            return Ok(Vec::new());
+        };
+
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                pdgid,
+                source,
+                text_type,
+                sort,
+                body,
+                snippet(pdg_text_search, 0, '[', ']', '...', 24),
+                bm25(pdg_text_search)
+            FROM pdg_text_search
+            WHERE pdg_text_search MATCH ?1
+            ORDER BY bm25(pdg_text_search), source, sort",
+        )?;
         Ok(stmt
-            .query_map([&name], |row| PdgParticle::from_row(self, row))?
+            .query_map([&query], |row| {
+                let pdg_id = row.get::<_, PdgId>(0)?;
+                let source = row.get::<_, String>(1)?;
+                let text_type = row.get::<_, Option<String>>(2)?;
+                let sort = row.get::<_, Option<isize>>(3)?;
+                let text = row.get::<_, String>(4)?;
+                let snippet = row.get::<_, String>(5)?;
+                let score = row.get::<_, f64>(6)?;
+                let (source, pdg_text) = if source == "text" {
+                    let text_type = text_type.unwrap_or_default();
+                    let sort = sort.unwrap_or_default();
+                    (
+                        TextSearchSource::Text {
+                            text_type: text_type.clone(),
+                            sort,
+                        },
+                        Some(PdgText {
+                            pdg_id: pdg_id.clone(),
+                            text_type,
+                            text: Some(text.clone()),
+                            sort,
+                        }),
+                    )
+                } else {
+                    (TextSearchSource::Description, None)
+                };
+                Ok(TextSearchResult {
+                    pdg_id,
+                    source,
+                    text,
+                    snippet,
+                    score,
+                    pdg_text,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -82,42 +150,6 @@ impl Pdg {
         Ok(stmt
             .query_row([&pdgid], |row| PdgParticle::from_row(self, row))
             .optional()?)
-    }
-
-    pub fn particles_by_class(
-        &self,
-        particle_class: ParticleClass,
-    ) -> PdgResult<Vec<PdgParticle<'_>>> {
-        let sql = format!(
-            "SELECT {} FROM pdgparticle {} WHERE pdgid.flags = ?1 ORDER BY pdgparticle.pdgid, name",
-            Self::PARTICLE_COLUMNS,
-            Self::PARTICLE_JOIN
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        Ok(stmt
-            .query_map([particle_class.flag()], |row| {
-                PdgParticle::from_row(self, row)
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
-    }
-
-    pub fn search_by_class(
-        &self,
-        name: impl Into<String>,
-        particle_class: ParticleClass,
-    ) -> PdgResult<Vec<PdgParticle<'_>>> {
-        let name = name.into();
-        let sql = format!(
-            "SELECT {} FROM pdgparticle {} WHERE name LIKE '%' || ?1 || '%' AND pdgid.flags = ?2 ORDER BY pdgparticle.pdgid, name",
-            Self::PARTICLE_COLUMNS,
-            Self::PARTICLE_JOIN
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        Ok(stmt
-            .query_map([&name, particle_class.flag()], |row| {
-                PdgParticle::from_row(self, row)
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn search_particles(&self, query: ParticleSearchQuery) -> PdgResult<Vec<PdgParticle<'_>>> {
@@ -756,6 +788,29 @@ fn unit_factor(unit_text: &str, unit: Unit) -> Option<f64> {
     }
 }
 
+fn fts_query(query: String) -> Option<String> {
+    let mut terms = Vec::new();
+    let mut term = String::new();
+    for ch in query.chars() {
+        if ch.is_alphanumeric() {
+            term.push(ch);
+        } else if !term.is_empty() {
+            terms.push(std::mem::take(&mut term));
+        }
+    }
+    if !term.is_empty() {
+        terms.push(term);
+    }
+
+    (!terms.is_empty()).then(|| {
+        terms
+            .into_iter()
+            .map(|term| format!("\"{term}\""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,5 +825,72 @@ mod tests {
         assert!(names.contains(&"pi+".to_string()));
         assert!(names.contains(&"pi".to_string()));
         assert!(!names.contains(&"pi-".to_string()));
+    }
+
+    #[test]
+    fn text_search_finds_pdgid_descriptions() {
+        let db = Pdg::open().unwrap();
+        let results = db.search_text("K(S)0 MEAN LIFE").unwrap();
+
+        let result = results
+            .iter()
+            .find(|result| {
+                result.pdg_id == "S012205" && result.source == TextSearchSource::Description
+            })
+            .unwrap();
+
+        assert!(result.text.contains("K(S)0 MEAN LIFE"));
+        assert!(!result.snippet.is_empty());
+        assert!(result.pdg_text.is_none());
+    }
+
+    #[test]
+    fn text_search_finds_pdgtext_rows() {
+        let db = Pdg::open().unwrap();
+        let results = db
+            .search_text("Measurements Kbar0 divided convert")
+            .unwrap();
+
+        let result = results
+            .iter()
+            .find(|result| matches!(result.source, TextSearchSource::Text { .. }))
+            .unwrap();
+
+        assert!(result.text.contains("Measurements given as a Kbar0 ratio"));
+        assert!(!result.snippet.is_empty());
+        assert_eq!(
+            result.pdg_text.as_ref().unwrap().text.as_deref(),
+            Some(result.text.as_str())
+        );
+    }
+
+    #[test]
+    fn text_search_handles_punctuation_heavy_queries() {
+        let db = Pdg::open().unwrap();
+        let results = db.search_text("K(S)0").unwrap();
+
+        assert!(!results.is_empty());
+        assert!(results.iter().any(|result| result.text.contains("K(S)0")));
+    }
+
+    #[test]
+    fn text_search_orders_by_score() {
+        let db = Pdg::open().unwrap();
+        let results = db.search_text("form factors").unwrap();
+
+        assert!(results.len() > 1);
+        assert!(
+            results
+                .windows(2)
+                .all(|window| window[0].score <= window[1].score)
+        );
+    }
+
+    #[test]
+    fn text_search_returns_empty_results_for_empty_or_missing_queries() {
+        let db = Pdg::open().unwrap();
+
+        assert!(db.search_text(".,()").unwrap().is_empty());
+        assert!(db.search_text("zzzzzznotapdgterm").unwrap().is_empty());
     }
 }
