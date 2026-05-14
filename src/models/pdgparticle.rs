@@ -382,6 +382,28 @@ pub struct PdgParticle<'pdg> {
     pub quantum_c: Option<Parity>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ParticleProperty<'pdg> {
+    pub data_type: DataType,
+    pub value: DataEntry<'pdg>,
+    pub source: PropertySource,
+}
+
+#[derive(Clone, Debug)]
+pub enum PropertySource {
+    Direct,
+    Section { section_pdg_id: PdgId },
+}
+
+impl Display for PropertySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct => f.write_str("Direct"),
+            Self::Section { section_pdg_id } => write!(f, "Section {section_pdg_id}"),
+        }
+    }
+}
+
 impl Display for PdgParticle<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -438,31 +460,13 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
-    pub fn headline_property_rows(&self) -> PdgResult<Vec<[String; 4]>> {
+    pub fn headline_properties(&self) -> PdgResult<Vec<ParticleProperty<'pdg>>> {
         let mut rows = Vec::new();
-        if let Some(mass) = self.mass()? {
-            rows.push([
-                "Mass".to_string(),
-                mass.to_string(),
-                mass.pdgid,
-                "Direct".to_string(),
-            ]);
-        }
-        if let Some(lifetime) = self.lifetime()? {
-            rows.push([
-                "Lifetime".to_string(),
-                lifetime.to_string(),
-                lifetime.pdgid,
-                "Direct".to_string(),
-            ]);
-        }
-        if let Some(width) = self.width()? {
-            rows.push([
-                "Width".to_string(),
-                width.to_string(),
-                width.pdgid,
-                "Direct".to_string(),
-            ]);
+
+        for data_type in [DataType::Mass, DataType::Lifetime, DataType::FullWidth] {
+            if let Some(property) = self.property(data_type)? {
+                rows.push(property);
+            }
         }
 
         for section in self.db.children_for_pdg_id(&self.pdg_id)? {
@@ -470,15 +474,23 @@ impl<'pdg> PdgParticle<'pdg> {
                 continue;
             }
             for child in self.db.children_for_pdg_id(&section.pdg_id)? {
-                let data = self.db.data_for(&child.pdg_id)?;
-                if let Some(value) = data.first() {
-                    rows.push([
-                        child.data_type.to_string(),
-                        value.to_string(),
-                        child.pdg_id,
-                        format!("Section {}", section.pdg_id),
-                    ]);
-                    break;
+                if !child.data_type.is_particle_property() {
+                    continue;
+                }
+                if matches!(
+                    child.data_type,
+                    DataType::Mass | DataType::Lifetime | DataType::FullWidth
+                ) {
+                    continue;
+                }
+                if rows
+                    .iter()
+                    .any(|property| property.data_type == child.data_type)
+                {
+                    continue;
+                }
+                if let Some(property) = self.section_property(&section, &child)? {
+                    rows.push(property);
                 }
             }
         }
@@ -486,18 +498,76 @@ impl<'pdg> PdgParticle<'pdg> {
         Ok(rows)
     }
 
-    fn search_property_summary(&self) -> PdgResult<[String; 3]> {
+    pub fn headline_property_rows(&self) -> PdgResult<Vec<[String; 4]>> {
+        Ok(self
+            .headline_properties()?
+            .into_iter()
+            .map(|property| {
+                [
+                    property.data_type.to_string(),
+                    property.value.to_string(),
+                    property.value.pdgid.clone(),
+                    property.source.to_string(),
+                ]
+            })
+            .collect())
+    }
+
+    pub fn direct_property(&self, data_type: DataType) -> PdgResult<Option<DataEntry<'pdg>>> {
+        self.query(data_type, LATEST_EDITION)
+    }
+
+    pub fn property(&self, data_type: DataType) -> PdgResult<Option<ParticleProperty<'pdg>>> {
+        if let Some(value) = self.direct_property(data_type)? {
+            return Ok(Some(ParticleProperty {
+                data_type,
+                value,
+                source: PropertySource::Direct,
+            }));
+        }
+
+        for section in self.db.children_for_pdg_id(&self.pdg_id)? {
+            if !matches!(section.data_type, DataType::Section) {
+                continue;
+            }
+            for child in self.db.children_for_pdg_id(&section.pdg_id)? {
+                if child.data_type == data_type {
+                    return self.section_property(&section, &child);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn section_property(
+        &self,
+        section: &crate::PdgIdEntry,
+        child: &crate::PdgIdEntry,
+    ) -> PdgResult<Option<ParticleProperty<'pdg>>> {
+        let data = self.db.data_for(&child.pdg_id)?;
+        Ok(data.into_iter().next().map(|value| ParticleProperty {
+            data_type: child.data_type,
+            value,
+            source: PropertySource::Section {
+                section_pdg_id: section.pdg_id.clone(),
+            },
+        }))
+    }
+
+    fn property_summary(&self) -> PdgResult<[String; 3]> {
         let mut mass = String::new();
         let mut lifetime = String::new();
         let mut width = String::new();
 
-        for row in self.headline_property_rows()? {
-            match row[0].as_str() {
-                "Mass" if mass.is_empty() => mass = row[1].clone(),
-                "Lifetime" if lifetime.is_empty() => lifetime = row[1].clone(),
-                "Width" if width.is_empty() => width = row[1].clone(),
-                _ => {}
-            }
+        if let Some(property) = self.property(DataType::Mass)? {
+            mass = property.value.to_string();
+        }
+        if let Some(property) = self.property(DataType::Lifetime)? {
+            lifetime = property.value.to_string();
+        }
+        if let Some(property) = self.property(DataType::FullWidth)? {
+            width = property.value.to_string();
         }
 
         Ok([mass, lifetime, width])
@@ -511,7 +581,7 @@ impl<'pdg> PdgParticle<'pdg> {
                 "Quantum",
             ]);
             for particle in particles {
-                let [mass, lifetime, width] = particle.search_property_summary()?;
+                let [mass, lifetime, width] = particle.property_summary()?;
                 table.add_row([
                     particle.pdg_id.clone(),
                     particle.name.clone(),
@@ -602,20 +672,26 @@ impl<'pdg> PdgParticle<'pdg> {
     }
 
     pub fn measurements_for(&self, data_type: DataType) -> PdgResult<Vec<PdgMeasurement>> {
-        Ok(match self.query(data_type, LATEST_EDITION)? {
-            Some(data) => self.db.measurements_for(data.pdgid)?,
+        Ok(match self.property(data_type)? {
+            Some(property) => self.db.measurements_for(property.value.pdgid)?,
             None => Vec::new(),
         })
     }
 
     pub fn mass(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
-        self.query(DataType::Mass, LATEST_EDITION)
+        Ok(self
+            .property(DataType::Mass)?
+            .map(|property| property.value))
     }
     pub fn lifetime(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
-        self.query(DataType::Lifetime, LATEST_EDITION)
+        Ok(self
+            .property(DataType::Lifetime)?
+            .map(|property| property.value))
     }
     pub fn width(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
-        self.query(DataType::FullWidth, LATEST_EDITION)
+        Ok(self
+            .property(DataType::FullWidth)?
+            .map(|property| property.value))
     }
     pub fn branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
@@ -1116,6 +1192,7 @@ mod tests {
     use crate::{
         AngularMomentum, BranchingFractionKind, Charge, DataType, DecayStateExpansion, Isospin,
         LimitType, Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg, PdgItemType,
+        PropertySource,
     };
 
     #[test]
@@ -1753,6 +1830,25 @@ mod tests {
         assert!(width.value.unwrap() > 2.0);
         assert_eq!(width.unit_text, "GeV");
         assert_eq!(width.pdgid, "S044W");
+    }
+
+    #[test]
+    fn properties_fall_back_to_section_children() {
+        let db = Pdg::open().unwrap();
+        let a0 = db.particle("a_0(980)0").unwrap().unwrap();
+
+        let mass = a0.mass().unwrap().unwrap();
+        let width = a0.width().unwrap().unwrap();
+        let mass_property = a0.property(DataType::Mass).unwrap().unwrap();
+
+        assert_eq!(mass.pdgid, "M036MX");
+        assert_eq!(mass.to_string(), "980+-20 MeV");
+        assert_eq!(width.pdgid, "M036W1");
+        assert_eq!(width.to_string(), "50 to 100 MeV");
+        assert!(matches!(
+            mass_property.source,
+            PropertySource::Section { ref section_pdg_id } if section_pdg_id == "M036205"
+        ));
     }
 
     #[test]

@@ -680,8 +680,9 @@ fn print_show(
     }
 
     if !output.summary {
-        print_measurements_for(&entry.pdg_id, &db.measurements_for(&entry.pdg_id)?);
-        print_footnotes(&db.footnotes_for(&entry.pdg_id)?);
+        let measurements = db.measurements_for(&entry.pdg_id)?;
+        print_measurements_for(&entry.pdg_id, &measurements);
+        print_unattached_footnotes(&db.footnotes_for(&entry.pdg_id)?, &measurements);
         if output.related_details {
             print_related_details(db, &entry.pdg_id, particle, &children, &related_entries)?;
         }
@@ -768,7 +769,7 @@ fn print_related_details(
             print_data_entries(&data);
         }
         print_measurements_for(&entry.pdg_id, &measurements);
-        print_footnotes(&footnotes);
+        print_unattached_footnotes(&footnotes, &measurements);
     }
     Ok(())
 }
@@ -1168,86 +1169,75 @@ fn print_footnotes(footnotes: &[PdgFootnote]) {
     }
 }
 
+fn print_unattached_footnotes(footnotes: &[PdgFootnote], measurements: &[PdgMeasurement]) {
+    let attached = measurements
+        .iter()
+        .flat_map(|measurement| measurement.footnotes.iter())
+        .map(footnote_key)
+        .collect::<HashSet<_>>();
+    let unattached = footnotes
+        .iter()
+        .filter(|footnote| !attached.contains(&footnote_key(footnote)))
+        .cloned()
+        .collect::<Vec<_>>();
+    print_footnotes(&unattached);
+}
+
+fn footnote_key(footnote: &PdgFootnote) -> (Option<isize>, Option<String>) {
+    (footnote.index, footnote.text.clone())
+}
+
 fn print_measurements(measurements: &[PdgMeasurement]) {
     if measurements.is_empty() {
         return;
     }
-    let mut table = table();
-    table.set_header([
-        "Reference",
-        "Value(s)",
-        "Year",
-        "Publication",
-        "DOI",
-        "INSPIRE",
-        "Title",
-        "Comment",
-    ]);
-    table.set_constraints([
-        ColumnConstraint::ContentWidth,
-        ColumnConstraint::Boundaries {
-            lower: Width::Fixed(18),
-            upper: Width::Fixed(32),
-        },
-        ColumnConstraint::ContentWidth,
-        ColumnConstraint::Boundaries {
-            lower: Width::Fixed(10),
-            upper: Width::Fixed(18),
-        },
-        ColumnConstraint::Boundaries {
-            lower: Width::Fixed(12),
-            upper: Width::Fixed(28),
-        },
-        ColumnConstraint::Boundaries {
-            lower: Width::Fixed(10),
-            upper: Width::Fixed(18),
-        },
-        ColumnConstraint::Boundaries {
-            lower: Width::Fixed(18),
-            upper: Width::Fixed(42),
-        },
-        ColumnConstraint::Boundaries {
-            lower: Width::Fixed(14),
-            upper: Width::Fixed(28),
-        },
-    ]);
-    for measurement in measurements {
+    for (index, measurement) in measurements.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
         let values = measurement
             .values
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        table.add_row([
-            measurement.reference.document_id.clone(),
-            values,
-            measurement
-                .reference
-                .publication_year
-                .map(|year| year.to_string())
-                .unwrap_or_default(),
-            measurement
-                .reference
-                .publication_name
-                .clone()
-                .unwrap_or_default(),
-            measurement
-                .reference
-                .doi
-                .clone()
-                .map(|doi| format!("https://doi.org/{}", doi))
-                .unwrap_or_default(),
-            measurement
-                .reference
-                .inspire_id
-                .clone()
-                .map(|id| format!("https://inspirehep.net/literature/{}", id))
-                .unwrap_or_default(),
-            measurement.reference.title.clone().unwrap_or_default(),
-            measurement.comment.clone().unwrap_or_default(),
-        ]);
+        println!("{}", measurement.reference.document_id.trim().bold());
+        if let Some(year) = measurement.reference.publication_year {
+            println!("  Year: {year}");
+        }
+        if let Some(publication) = &measurement.reference.publication_name {
+            println!("  Publication: {publication}");
+        }
+        if let Some(title) = &measurement.reference.title {
+            println!("  Title: {title}");
+        }
+        if let Some(doi) = &measurement.reference.doi {
+            println!("  DOI: https://doi.org/{doi}");
+        }
+        if let Some(inspire_id) = &measurement.reference.inspire_id {
+            println!("  INSPIRE: https://inspirehep.net/literature/{inspire_id}");
+        }
+        if !values.is_empty() {
+            println!("  Value(s): {values}");
+        }
+        if let Some(comment) = &measurement.comment {
+            println!("  Comment: {comment}");
+        }
+        if !measurement.footnotes.is_empty() {
+            println!("  Footnotes:");
+            for footnote in &measurement.footnotes {
+                let index = footnote
+                    .index
+                    .map(|index| index.to_string())
+                    .unwrap_or_default();
+                println!(
+                    "    [{}] {}",
+                    index,
+                    footnote.text.clone().unwrap_or_default()
+                );
+            }
+        }
     }
-    println!("{table}");
 }
 
 fn print_measurements_for(pdg_id: &str, measurements: &[PdgMeasurement]) {

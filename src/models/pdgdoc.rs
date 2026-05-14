@@ -227,6 +227,31 @@ impl DataType {
             Self::Other => "",
         }
     }
+
+    pub fn is_branching_fraction(&self) -> bool {
+        matches!(
+            self,
+            Self::ExclusiveBranchingFraction
+                | Self::ExclusiveBranchingFraction1
+                | Self::ExclusiveBranchingFraction2
+                | Self::ExclusiveBranchingFraction3
+                | Self::ExclusiveBranchingFraction4
+                | Self::ExclusiveBranchingFraction5
+                | Self::InclusiveBranchingFraction
+                | Self::InclusiveBranchingFraction1
+                | Self::InclusiveBranchingFraction2
+                | Self::InclusiveBranchingFraction3
+                | Self::InclusiveBranchingFraction4
+                | Self::InclusiveBranchingFraction5
+        )
+    }
+
+    pub fn is_particle_property(&self) -> bool {
+        !matches!(
+            self,
+            Self::BranchingRatio | Self::Particle | Self::Searches | Self::Section | Self::Other
+        ) && !self.is_branching_fraction()
+    }
 }
 
 impl Display for DataType {

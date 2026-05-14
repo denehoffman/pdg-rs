@@ -147,7 +147,7 @@ fn show_particle_does_not_expand_related_branching_measurements() {
 }
 
 #[test]
-fn show_measurements_use_reference_table() {
+fn show_measurements_use_reference_blocks() {
     let mut cmd = Command::cargo_bin("pdg").unwrap();
     let stdout = String::from_utf8(
         cmd.args(["show", "M036R2"])
@@ -159,15 +159,31 @@ fn show_measurements_use_reference_table() {
     )
     .unwrap();
     assert!(stdout.contains("Measurements for M036R2"));
-    assert!(stdout.contains("Reference"));
-    assert!(stdout.contains("DOI"));
-    assert!(stdout.contains("INSPIRE"));
-    assert!(stdout.contains("Title"));
+    assert!(stdout.contains("ABLIKIM 2022AH"));
+    assert!(stdout.contains("DOI: https://doi.org/"));
+    assert!(stdout.contains("INSPIRE: https://inspirehep.net/literature/"));
+    assert!(stdout.contains("Title:"));
+    assert!(stdout.contains("Value(s):"));
+    assert!(stdout.contains("  Footnotes:"));
     assert!(stdout.contains("[1] Using D_s()+"));
     assert!(!stdout.contains("Index"));
-    let measurements = stdout.find("Measurements for M036R2").unwrap();
-    let footnotes = stdout.find("Footnotes").unwrap();
-    assert!(measurements < footnotes);
+    let first_reference = stdout.find("ABLIKIM 2022AH").unwrap();
+    let first_footnote = stdout.find("  Footnotes:").unwrap();
+    let next_reference = stdout.find("ABELE 1998").unwrap();
+    assert!(first_reference < first_footnote);
+    assert!(first_footnote < next_reference);
+}
+
+#[test]
+fn show_particle_headline_includes_other_section_properties() {
+    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    cmd.args(["show", "S008", "--summary"])
+        .assert()
+        .success()
+        .stdout(contains("Properties"))
+        .stdout(contains("Form factor"))
+        .stdout(contains("S008FV"))
+        .stdout(contains("Section S008245"));
 }
 
 #[test]

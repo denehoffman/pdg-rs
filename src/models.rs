@@ -4,7 +4,8 @@ pub use pdgdoc::{DataType, LimitType, ValueType};
 mod pdgparticle;
 pub use pdgparticle::{
     AngularMomentum, BranchingFraction, BranchingFractionKind, BranchingRatio, Charge,
-    DecayProduct, Isospin, Parity, ParticleClass, ParticleType, PdgParticle,
+    DecayProduct, Isospin, Parity, ParticleClass, ParticleProperty, ParticleType, PdgParticle,
+    PropertySource,
 };
 
 mod pdgsearch;
