@@ -11,6 +11,17 @@ cargo add pdg-rs
 
 ## Usage
 
+### CLI
+This crate also provides a `pdg` binary for searching the embedded database:
+```bash
+pdg particle pi+
+pdg particle --class lepton --limit 5
+pdg particle --decays-to K\(S\)0,K\(S\)0 --charge 0
+pdg pdgid S008
+pdg text "form factors"
+```
+`pdgid` refers to PDG database string IDs like `S008`; Monte Carlo particle IDs are exposed as `mcid` in the Rust API and through `pdg particle --mcid 211`.
+
 ### Get information about a specific particle:
 ```rust
 use pdg_rs::{Pdg, PdgResult};
@@ -18,7 +29,7 @@ use pdg_rs::{Pdg, PdgResult};
 fn main() -> PdgResult<()> {
     let pdg = Pdg::open()?;
     let pi_plus = pdg.particle("pi+")?.unwrap();
-    // alternatively `pdg.pdgid(211)?.unwrap()`
+    // alternatively `pdg.mcid(211)?.unwrap()`
     println!("{pi_plus}");
     let m_pi_plus = pi_plus.mass()?.unwrap();
     println!("{m_pi_plus}");

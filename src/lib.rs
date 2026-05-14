@@ -140,7 +140,7 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn pdgid(&self, pdgid: isize) -> PdgResult<Option<PdgParticle<'_>>> {
+    pub fn mcid(&self, mcid: isize) -> PdgResult<Option<PdgParticle<'_>>> {
         let sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE mcid = ?1",
             Self::PARTICLE_COLUMNS,
@@ -148,7 +148,7 @@ impl Pdg {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_row([&pdgid], |row| PdgParticle::from_row(self, row))
+            .query_row([&mcid], |row| PdgParticle::from_row(self, row))
             .optional()?)
     }
 
