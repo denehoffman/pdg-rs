@@ -1,13 +1,13 @@
 use std::str::FromStr;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use comfy_table::{Table, presets::UTF8_FULL};
+use comfy_table::{ColumnConstraint, ContentArrangement, Table, Width, presets::UTF8_FULL};
 use owo_colors::OwoColorize;
 use pdg_rs::{
     AngularMomentum, BranchingFraction, BranchingFractionKind, BranchingRatio, Charge, DataEntry,
     DecayStateExpansion, Isospin, Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg,
-    PdgError, PdgFootnote, PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgReference, PdgText,
-    TextSearchResult, TextSearchSource,
+    PdgError, PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle,
+    PdgReference, PdgText, TextSearchResult, TextSearchSource,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -41,6 +41,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Look up any PDG database ID, such as S008 or S008245.
+    Show(ShowCommand),
+    /// Search particles or text.
+    Search(SearchCommand),
     /// Search particles by name and particle properties.
     Particle(ParticleCommand),
     /// Look up a particle by string PDG ID, such as S008.
@@ -66,7 +70,29 @@ struct PdgIdCommand {
     /// String PDG ID, such as S008.
     pdg_id: String,
     #[command(flatten)]
-    output: ParticleOutput,
+    output: ShowOutput,
+}
+
+#[derive(Parser)]
+struct ShowCommand {
+    /// String PDG ID, such as S008 or S008245.
+    pdg_id: String,
+    #[command(flatten)]
+    output: ShowOutput,
+}
+
+#[derive(Parser)]
+struct SearchCommand {
+    #[command(subcommand)]
+    command: SearchCommands,
+}
+
+#[derive(Subcommand)]
+enum SearchCommands {
+    /// Search particles by name and particle properties.
+    Particles(ParticleCommand),
+    /// Search PDG descriptions and text entries.
+    Text(TextCommand),
 }
 
 #[derive(Parser)]
@@ -128,6 +154,8 @@ struct ParticleOutput {
     #[arg(long)]
     all: bool,
     #[arg(long)]
+    with_counts: bool,
+    #[arg(long)]
     details: bool,
     #[arg(long)]
     with_related: bool,
@@ -135,6 +163,24 @@ struct ParticleOutput {
     with_decays: bool,
     #[arg(long)]
     with_ratios: bool,
+    #[arg(long)]
+    with_measurements: bool,
+    #[arg(long)]
+    with_texts: bool,
+    #[arg(long)]
+    with_footnotes: bool,
+}
+
+#[derive(Parser, Clone)]
+struct ShowOutput {
+    #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+    format: OutputFormat,
+    #[arg(long)]
+    full: bool,
+    #[arg(long)]
+    with_related: bool,
+    #[arg(long)]
+    with_decays: bool,
     #[arg(long)]
     with_measurements: bool,
     #[arg(long)]
@@ -316,6 +362,31 @@ struct FootnoteDto {
     changebar: bool,
 }
 
+#[derive(Serialize)]
+struct ShowDto {
+    entry: PdgIdEntryDto,
+    particle: Option<ParticleDto>,
+    data: Vec<DataEntryDto>,
+    children: Vec<PdgIdEntryDto>,
+    related_entries: Vec<PdgIdEntryDto>,
+    texts: Option<Vec<TextDto>>,
+    footnotes: Option<Vec<FootnoteDto>>,
+    measurements: Option<Vec<MeasurementDto>>,
+}
+
+#[derive(Serialize)]
+struct PdgIdEntryDto {
+    id: isize,
+    pdg_id: String,
+    parent_pdg_id: Option<String>,
+    description: String,
+    mode_number: Option<isize>,
+    data_type: String,
+    flags: String,
+    year_added: Option<isize>,
+    sort: isize,
+}
+
 fn main() -> CliResult<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
@@ -325,36 +396,45 @@ fn main() -> CliResult<()> {
     };
 
     match command {
-        Commands::Particle(command) => run_particle(command),
-        Commands::Pdgid(command) => run_pdgid(command),
+        Commands::Show(command) => run_show(command.pdg_id, command.output),
+        Commands::Search(command) => match command.command {
+            SearchCommands::Particles(command) => run_particle(command, ParticleMode::Search),
+            SearchCommands::Text(command) => run_text(command),
+        },
+        Commands::Particle(command) => run_particle(command, ParticleMode::Lookup),
+        Commands::Pdgid(command) => run_show(command.pdg_id, command.output),
         Commands::Text(command) => run_text(command),
         Commands::Tui => Err(CliError::InvalidArgument(
-            "TUI is not implemented yet; use `pdg particle`, `pdg pdgid`, or `pdg text`".into(),
+            "TUI is not implemented yet; use `pdg show`, `pdg search particles`, or `pdg search text`"
+                .into(),
         )),
     }
 }
 
-fn run_particle(command: ParticleCommand) -> CliResult<()> {
+enum ParticleMode {
+    Lookup,
+    Search,
+}
+
+fn run_particle(command: ParticleCommand, mode: ParticleMode) -> CliResult<()> {
     let db = Pdg::open()?;
-    let mut particles = if let Some(mcid) = command.filters.mcid {
+    let mut particles: Vec<_> = if let Some(mcid) = command.filters.mcid {
         db.mcid(mcid)?.into_iter().collect()
+    } else if matches!(mode, ParticleMode::Lookup)
+        && !has_particle_filters(&command.filters)
+        && command.query.is_some()
+    {
+        let query = command.query.as_deref().unwrap();
+        db.particle(query)?
+            .or(db.particle_by_pdg_id(query)?)
+            .into_iter()
+            .collect()
     } else {
         db.search_particles(build_query(command.query, &command.filters)?)?
     };
 
     particles = apply_limit(particles, command.output.limit, command.output.all);
     output_particles(&db, particles, &command.output)
-}
-
-fn run_pdgid(command: PdgIdCommand) -> CliResult<()> {
-    let db = Pdg::open()?;
-    let particle = db
-        .search_particles(ParticleSearchQuery::new())?
-        .into_iter()
-        .find(|particle| particle.pdg_id.eq_ignore_ascii_case(&command.pdg_id))
-        .ok_or_else(|| CliError::NotFound(command.pdg_id.clone()))?;
-
-    output_particles(&db, vec![particle], &command.output)
 }
 
 fn run_text(command: TextCommand) -> CliResult<()> {
@@ -369,6 +449,23 @@ fn run_text(command: TextCommand) -> CliResult<()> {
                     &results.iter().map(text_search_dto).collect::<Vec<_>>()
                 )?
             );
+            Ok(())
+        }
+    }
+}
+
+fn run_show(pdg_id: String, output: ShowOutput) -> CliResult<()> {
+    let db = Pdg::open()?;
+    let entry = db
+        .pdg_id(&pdg_id)?
+        .ok_or_else(|| CliError::NotFound(pdg_id.clone()))?;
+    let particle = db.particle_by_pdg_id(&entry.pdg_id)?;
+
+    match output.format {
+        OutputFormat::Pretty => print_show(&db, &entry, particle.as_ref(), &output),
+        OutputFormat::Json => {
+            let dto = show_dto(&db, &entry, particle.as_ref(), &output)?;
+            println!("{}", serde_json::to_string_pretty(&dto)?);
             Ok(())
         }
     }
@@ -389,6 +486,221 @@ fn output_particles(
             println!("{}", serde_json::to_string_pretty(&dtos)?);
             Ok(())
         }
+    }
+}
+
+fn print_show(
+    db: &Pdg,
+    entry: &PdgIdEntry,
+    particle: Option<&PdgParticle<'_>>,
+    output: &ShowOutput,
+) -> CliResult<()> {
+    println!(
+        "{}",
+        format!("{} {}", entry.pdg_id, entry.description).bold()
+    );
+    let mut meta = table();
+    meta.set_header(["Field", "Value"]);
+    meta.add_row(["PDG ID".to_string(), entry.pdg_id.clone()]);
+    meta.add_row(["Type".to_string(), entry.data_type.clone()]);
+    meta.add_row([
+        "Parent".to_string(),
+        entry.parent_pdg_id.clone().unwrap_or_default(),
+    ]);
+    meta.add_row([
+        "Mode".to_string(),
+        entry
+            .mode_number
+            .map(|mode| mode.to_string())
+            .unwrap_or_default(),
+    ]);
+    println!("{meta}");
+
+    if let Some(particle) = particle {
+        println!("{}", particle.to_string().cyan());
+        print_core_data(particle, true)?;
+        if output.full || output.with_related {
+            print_related_particles(particle)?;
+            print_related_properties(particle)?;
+        }
+        if output.full || output.with_decays {
+            let particle_output = particle_output_for_show(output);
+            print_branching_fractions(particle, &particle_output)?;
+            print_branching_ratios(particle, &particle_output)?;
+        }
+    }
+
+    let data = db.data_for(&entry.pdg_id)?;
+    if !data.is_empty() {
+        println!("{}", "Data".cyan());
+        print_data_entries(&data);
+    }
+
+    let children = db.children_for_pdg_id(&entry.pdg_id)?;
+    if !children.is_empty() {
+        println!("{}", "Child PDG IDs".cyan());
+        print_pdg_id_entries(&children);
+    }
+
+    let related_entries = db.mapped_entries_for_pdg_id(&entry.pdg_id)?;
+    if !related_entries.is_empty() {
+        println!("{}", "Related PDG IDs".cyan());
+        print_pdg_id_entries(&related_entries);
+    }
+
+    if output.full || output.with_texts {
+        print_texts(&db.texts_for(&entry.pdg_id)?);
+    }
+    if output.full || output.with_footnotes {
+        print_footnotes(&db.footnotes_for(&entry.pdg_id)?);
+    }
+    if output.full || output.with_measurements {
+        print_measurements_for(&entry.pdg_id, &db.measurements_for(&entry.pdg_id)?);
+        for related in related_entries {
+            print_measurements_for(&related.pdg_id, &db.measurements_for(&related.pdg_id)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn print_related_properties(particle: &PdgParticle<'_>) -> CliResult<()> {
+    let related = particle.related_particles()?;
+    let mut rows = Vec::new();
+    for related_particle in related {
+        for (property, entry) in [
+            ("mass", related_particle.mass()?),
+            ("lifetime", related_particle.lifetime()?),
+            ("width", related_particle.width()?),
+        ] {
+            if let Some(entry) = entry {
+                rows.push([
+                    related_particle.name.clone(),
+                    property.to_string(),
+                    entry.to_string(),
+                    entry.pdgid,
+                ]);
+            }
+        }
+    }
+    if rows.is_empty() {
+        return Ok(());
+    }
+    println!("{}", "Related/family properties".cyan());
+    let mut table = table();
+    table.set_header(["Particle", "Property", "Value", "Source PDG ID"]);
+    for row in rows {
+        table.add_row(row);
+    }
+    println!("{table}");
+    Ok(())
+}
+
+fn print_data_entries(entries: &[DataEntry<'_>]) {
+    let mut table = table();
+    table.set_header(["PDG ID", "Value", "Type", "Comment"]);
+    table.set_constraints([
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(30),
+            upper: Width::Fixed(72),
+        },
+    ]);
+    for entry in entries {
+        table.add_row([
+            entry.pdgid.clone(),
+            entry.to_string(),
+            entry.value_type.to_string(),
+            entry.comment.clone().unwrap_or_default(),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_pdg_id_entries(entries: &[PdgIdEntry]) {
+    let mut table = table();
+    table.set_header(["PDG ID", "Type", "Description"]);
+    table.set_constraints([
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(35),
+            upper: Width::Fixed(72),
+        },
+    ]);
+    for entry in entries {
+        table.add_row([
+            entry.pdg_id.clone(),
+            entry.data_type.clone(),
+            entry.description.clone(),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn show_dto(
+    db: &Pdg,
+    entry: &PdgIdEntry,
+    particle: Option<&PdgParticle<'_>>,
+    output: &ShowOutput,
+) -> CliResult<ShowDto> {
+    let particle_output = particle_output_for_show(output);
+    Ok(ShowDto {
+        entry: pdg_id_entry_dto(entry),
+        particle: particle
+            .map(|particle| particle_dto(db, particle, &particle_output))
+            .transpose()?,
+        data: db
+            .data_for(&entry.pdg_id)?
+            .iter()
+            .map(|entry| data_entry_dto(entry, &particle_output))
+            .collect::<CliResult<Vec<_>>>()?,
+        children: db
+            .children_for_pdg_id(&entry.pdg_id)?
+            .iter()
+            .map(pdg_id_entry_dto)
+            .collect(),
+        related_entries: db
+            .mapped_entries_for_pdg_id(&entry.pdg_id)?
+            .iter()
+            .map(pdg_id_entry_dto)
+            .collect(),
+        texts: (output.full || output.with_texts)
+            .then(|| {
+                db.texts_for(&entry.pdg_id)
+                    .map(|texts| texts.iter().map(text_dto).collect())
+            })
+            .transpose()?,
+        footnotes: (output.full || output.with_footnotes)
+            .then(|| {
+                db.footnotes_for(&entry.pdg_id)
+                    .map(|footnotes| footnotes.iter().map(footnote_dto).collect())
+            })
+            .transpose()?,
+        measurements: (output.full || output.with_measurements)
+            .then(|| {
+                db.measurements_for(&entry.pdg_id)
+                    .map(|measurements| measurements.iter().map(measurement_dto).collect())
+            })
+            .transpose()?,
+    })
+}
+
+fn particle_output_for_show(output: &ShowOutput) -> ParticleOutput {
+    ParticleOutput {
+        format: output.format,
+        limit: 20,
+        all: false,
+        with_counts: false,
+        details: true,
+        with_related: output.full || output.with_related,
+        with_decays: output.full || output.with_decays,
+        with_ratios: output.full || output.with_decays,
+        with_measurements: output.full || output.with_measurements,
+        with_texts: output.full || output.with_texts,
+        with_footnotes: output.full || output.with_footnotes,
     }
 }
 
@@ -470,6 +782,31 @@ fn apply_limit<T>(items: Vec<T>, limit: usize, all: bool) -> Vec<T> {
     }
 }
 
+fn has_particle_filters(filters: &ParticleFilters) -> bool {
+    filters.class.is_some()
+        || filters.particle_type.is_some()
+        || filters.charge.is_some()
+        || filters.isospin.is_some()
+        || filters.g_parity.is_some()
+        || filters.spin.is_some()
+        || filters.parity.is_some()
+        || filters.c_parity.is_some()
+        || filters.mass.is_some()
+        || filters.width.is_some()
+        || filters.lifetime.is_some()
+        || !filters.decays_to.is_empty()
+        || !filters.decay_contains.is_empty()
+        || !filters.decays_from.is_empty()
+}
+
+fn table() -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::DynamicFullWidth);
+    table
+}
+
 fn print_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> CliResult<()> {
     if particles.is_empty() {
         println!("{}", "No particles found.".yellow());
@@ -484,16 +821,20 @@ fn print_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> Cl
         && !output.with_texts
         && !output.with_footnotes
     {
-        let mut table = Table::new();
-        table.load_preset(UTF8_FULL);
-        table.set_header([
-            "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
-            "Decays", "Ratios", "Quantum",
-        ]);
+        let mut table = table();
+        if output.with_counts {
+            table.set_header([
+                "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
+                "Decays", "Ratios", "Quantum",
+            ]);
+        } else {
+            table.set_header([
+                "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
+                "Quantum",
+            ]);
+        }
         for particle in particles {
-            let decays = particle.branching_fractions()?.len();
-            let ratios = particle.branching_ratios()?.len();
-            table.add_row([
+            let mut row = vec![
                 particle.pdg_id.clone(),
                 particle.name.clone(),
                 particle.particle_class.to_string(),
@@ -515,10 +856,13 @@ fn print_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> Cl
                     .width()?
                     .map(|entry| entry.to_string())
                     .unwrap_or_default(),
-                decays.to_string(),
-                ratios.to_string(),
-                quantum_summary(particle),
-            ]);
+            ];
+            if output.with_counts {
+                row.push(particle.branching_fractions()?.len().to_string());
+                row.push(particle.branching_ratios()?.len().to_string());
+            }
+            row.push(quantum_summary(particle));
+            table.add_row(row);
         }
         println!("{table}");
         return Ok(());
@@ -529,7 +873,7 @@ fn print_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> Cl
             println!();
         }
         println!("{}", particle.to_string().bold());
-        print_core_data(particle)?;
+        print_core_data(particle, true)?;
 
         if output.with_related {
             print_related_particles(particle)?;
@@ -550,18 +894,27 @@ fn print_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> Cl
     Ok(())
 }
 
-fn print_core_data(particle: &PdgParticle<'_>) -> CliResult<()> {
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
+fn print_core_data(particle: &PdgParticle<'_>, show_empty: bool) -> CliResult<()> {
+    let mut table = table();
     table.set_header(["Property", "Value", "PDG ID"]);
+    let mut rows = 0;
     if let Some(mass) = particle.mass()? {
         table.add_row(["mass".to_string(), mass.to_string(), mass.pdgid]);
+        rows += 1;
     }
     if let Some(lifetime) = particle.lifetime()? {
         table.add_row(["lifetime".to_string(), lifetime.to_string(), lifetime.pdgid]);
+        rows += 1;
     }
     if let Some(width) = particle.width()? {
         table.add_row(["width".to_string(), width.to_string(), width.pdgid]);
+        rows += 1;
+    }
+    if rows == 0 {
+        if show_empty {
+            println!("{}", "No direct mass/lifetime/width data.".yellow());
+        }
+        return Ok(());
     }
     println!("{table}");
     Ok(())
@@ -585,24 +938,60 @@ fn print_branching_fractions(particle: &PdgParticle<'_>, output: &ParticleOutput
         return Ok(());
     }
     println!("{}", "Branching fractions".cyan());
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
+    let mut table = table();
     table.set_header(["PDG ID", "Kind", "Value", "Description"]);
+    table.set_constraints([
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(30),
+            upper: Width::Fixed(72),
+        },
+    ]);
     for decay in &decays {
+        let measurements = if output.with_measurements {
+            decay.measurements()?.len()
+        } else {
+            0
+        };
+        let related_ids = decay
+            .related_data
+            .iter()
+            .map(|entry| entry.pdg_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         table.add_row([
             decay.pdg_id.clone(),
             branching_kind(decay.kind).to_string(),
             decay.value.to_string(),
-            decay.description.clone(),
+            if output.with_measurements || !related_ids.is_empty() {
+                format!(
+                    "{}{}{}",
+                    decay.description,
+                    if output.with_measurements {
+                        format!(" | measurements: {measurements}")
+                    } else {
+                        String::new()
+                    },
+                    if related_ids.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" | related: {related_ids}")
+                    }
+                )
+            } else {
+                decay.description.clone()
+            },
         ]);
     }
     println!("{table}");
 
     if output.with_measurements {
         for decay in decays {
-            print_measurements(&decay.measurements()?);
+            print_measurements_for(&decay.pdg_id, &decay.measurements()?);
             for related in &decay.related_data {
-                print_measurements(&related.measurements()?);
+                print_measurements_for(&related.pdg_id, &related.measurements()?);
             }
         }
     }
@@ -615,9 +1004,16 @@ fn print_branching_ratios(particle: &PdgParticle<'_>, output: &ParticleOutput) -
         return Ok(());
     }
     println!("{}", "Branching ratios".cyan());
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
+    let mut table = table();
     table.set_header(["PDG ID", "Value", "Description"]);
+    table.set_constraints([
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(30),
+            upper: Width::Fixed(72),
+        },
+    ]);
     for ratio in &ratios {
         table.add_row([
             ratio.pdg_id.clone(),
@@ -629,7 +1025,7 @@ fn print_branching_ratios(particle: &PdgParticle<'_>, output: &ParticleOutput) -
 
     if output.with_measurements {
         for ratio in ratios {
-            print_measurements(&ratio.measurements()?);
+            print_measurements_for(&ratio.pdg_id, &ratio.measurements()?);
         }
     }
     Ok(())
@@ -640,9 +1036,17 @@ fn print_text_results(results: &[TextSearchResult], show_full_text: bool) -> Cli
         println!("{}", "No text results found.".yellow());
         return Ok(());
     }
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
+    let mut table = table();
     table.set_header(["PDG ID", "Source", "Score", "Text"]);
+    table.set_constraints([
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::ContentWidth,
+        ColumnConstraint::Boundaries {
+            lower: Width::Fixed(35),
+            upper: Width::Fixed(72),
+        },
+    ]);
     for result in results {
         table.add_row([
             result.pdg_id.clone(),
@@ -701,6 +1105,14 @@ fn print_measurements(measurements: &[PdgMeasurement]) {
             println!("  {:<24} {}", "", values);
         }
     }
+}
+
+fn print_measurements_for(pdg_id: &str, measurements: &[PdgMeasurement]) {
+    if measurements.is_empty() {
+        return;
+    }
+    println!("{}", format!("Measurements for {pdg_id}").cyan());
+    print_measurements(measurements);
 }
 
 fn particle_dto(
@@ -944,6 +1356,20 @@ fn text_dto(text: &PdgText) -> TextDto {
         text_type: text.text_type.clone(),
         text: text.text.clone(),
         sort: text.sort,
+    }
+}
+
+fn pdg_id_entry_dto(entry: &PdgIdEntry) -> PdgIdEntryDto {
+    PdgIdEntryDto {
+        id: entry.id,
+        pdg_id: entry.pdg_id.clone(),
+        parent_pdg_id: entry.parent_pdg_id.clone(),
+        description: entry.description.clone(),
+        mode_number: entry.mode_number,
+        data_type: entry.data_type.clone(),
+        flags: entry.flags.clone(),
+        year_added: entry.year_added,
+        sort: entry.sort,
     }
 }
 

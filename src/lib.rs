@@ -83,6 +83,34 @@ impl Pdg {
             .optional()?)
     }
 
+    pub fn particle_by_pdg_id(
+        &self,
+        pdg_id: impl Into<String>,
+    ) -> PdgResult<Option<PdgParticle<'_>>> {
+        let pdg_id = pdg_id.into();
+        let sql = format!(
+            "SELECT {} FROM pdgparticle {} WHERE upper(pdgparticle.pdgid) = upper(?1)",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt
+            .query_row([&pdg_id], |row| PdgParticle::from_row(self, row))
+            .optional()?)
+    }
+
+    pub fn pdg_id(&self, pdg_id: impl Into<String>) -> PdgResult<Option<PdgIdEntry>> {
+        let pdg_id = pdg_id.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pdgid, parent_pdgid, description, mode_number, data_type, flags, year_added, sort
+            FROM pdgid
+            WHERE upper(pdgid) = upper(?1)",
+        )?;
+        Ok(stmt
+            .query_row([&pdg_id], |row| PdgIdEntry::try_from(row))
+            .optional()?)
+    }
+
     pub fn search_text(&self, query: impl Into<String>) -> PdgResult<Vec<TextSearchResult>> {
         let Some(query) = fts_query(query.into()) else {
             return Ok(Vec::new());
@@ -314,6 +342,50 @@ impl Pdg {
         )?;
         Ok(stmt
             .query_map([&name], |row| PdgItem::from_row(self, row))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn children_for_pdg_id(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgIdEntry>> {
+        let pdg_id = pdg_id.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pdgid, parent_pdgid, description, mode_number, data_type, flags, year_added, sort
+            FROM pdgid
+            WHERE upper(parent_pdgid) = upper(?1)
+            ORDER BY sort, pdgid",
+        )?;
+        Ok(stmt
+            .query_map([&pdg_id], |row| PdgIdEntry::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn mapped_entries_for_pdg_id(
+        &self,
+        pdg_id: impl Into<String>,
+    ) -> PdgResult<Vec<PdgIdEntry>> {
+        let pdg_id = pdg_id.into();
+        let mut stmt = self.conn.prepare(
+            "SELECT target.id, target.pdgid, target.parent_pdgid, target.description, target.mode_number, target.data_type, target.flags, target.year_added, target.sort
+            FROM pdgid_map
+            JOIN pdgid target ON target.id = pdgid_map.target_id
+            WHERE upper(pdgid_map.source) = upper(?1)
+            ORDER BY pdgid_map.sort, target.pdgid",
+        )?;
+        Ok(stmt
+            .query_map([&pdg_id], |row| PdgIdEntry::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn data_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<DataEntry<'_>>> {
+        let pdg_id = pdg_id.into();
+        let sql = format!(
+            "SELECT {} FROM pdgdata WHERE upper(pdgid) = upper(?1) AND edition = ?2 ORDER BY sort",
+            DataEntry::COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt
+            .query_map([&pdg_id, LATEST_EDITION], |row| {
+                DataEntry::from_row(self, row)
+            })?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
