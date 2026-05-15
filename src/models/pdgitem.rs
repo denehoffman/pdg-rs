@@ -7,16 +7,26 @@ use rusqlite::{
 
 use crate::{Pdg, PdgError, PdgParticle, PdgResult};
 
+/// Kind of named item in the PDG item hierarchy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PdgItemType {
+    /// A concrete particle item.
     Particle,
+    /// A group of related items.
     Group,
+    /// A charge multiplet item.
     ChargeMultiplet,
+    /// An alias for another item.
     Alias,
+    /// A synonymous item name.
     Synonym,
+    /// A wildcard item used in decay descriptions.
     Wildcard,
+    /// A table term item.
     TableTerm,
+    /// A redirecting item name.
     Redirect,
+    /// An item type code not recognized by this crate.
     Unknown(String),
 }
 
@@ -44,17 +54,20 @@ impl FromSql for PdgItemType {
             ValueRef::Text(bytes) => {
                 let s =
                     std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
-                PdgItemType::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
+                Self::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
             }
             _ => Err(FromSqlError::InvalidType),
         }
     }
 }
 
+/// Named item used to organize particles and decay products.
 #[derive(Clone, Debug)]
 pub struct PdgItem<'pdg> {
     pub(crate) db: &'pdg Pdg,
+    /// Item name as stored in the PDG database.
     pub name: String,
+    /// Kind of PDG item.
     pub item_type: PdgItemType,
 }
 
@@ -67,6 +80,11 @@ impl<'pdg> PdgItem<'pdg> {
         })
     }
 
+    /// Returns the particle represented by this item, when this item is a particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the particle lookup cannot be executed.
     pub fn particle(&self) -> PdgResult<Option<PdgParticle<'pdg>>> {
         match &self.item_type {
             PdgItemType::Particle => self.db.particle(&self.name),
@@ -74,14 +92,30 @@ impl<'pdg> PdgItem<'pdg> {
         }
     }
 
+    /// Returns child items in the PDG item hierarchy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the hierarchy query cannot be executed.
     pub fn children(&self) -> PdgResult<Vec<PdgItemChild<'pdg>>> {
         self.db.item_children(&self.name)
     }
 
-    pub fn parents(&self) -> PdgResult<Vec<PdgItem<'pdg>>> {
+    /// Returns parent items in the PDG item hierarchy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the hierarchy query cannot be executed.
+    pub fn parents(&self) -> PdgResult<Vec<Self>> {
         self.db.item_parents(&self.name)
     }
 
+    /// Returns particles related to this item through the item hierarchy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the hierarchy or particle queries cannot be
+    /// executed.
     pub fn related_particles(&self) -> PdgResult<Vec<PdgParticle<'pdg>>> {
         if let Some(particle) = self.particle()? {
             return particle.related_particles();
@@ -103,9 +137,13 @@ impl PartialEq for PdgItem<'_> {
 
 impl Eq for PdgItem<'_> {}
 
+/// Child item in a [`PdgItem`] hierarchy query.
 #[derive(Debug, Clone)]
 pub struct PdgItemChild<'pdg> {
+    /// Child item.
     pub item: PdgItem<'pdg>,
+    /// Sort key from the item mapping table.
     pub sort: isize,
+    /// Particle for this child when [`PdgItemChild::item`] is a particle.
     pub particle: Option<PdgParticle<'pdg>>,
 }

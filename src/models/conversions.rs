@@ -5,26 +5,46 @@ use thiserror::Error;
 
 use super::pdgparticle::{AngularMomentum, Charge, Isospin, Parity};
 
+/// Error returned when a quantum number cannot be converted to a numeric type.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QuantumNumberConversionError {
+    /// The source value represents more than one possible numeric value.
     #[error("{kind} has no single numeric value")]
-    Ambiguous { kind: &'static str },
+    Ambiguous {
+        /// Kind of quantum number being converted.
+        kind: &'static str,
+    },
+    /// The source value is explicitly unknown.
     #[error("{kind} is unknown")]
-    Unknown { kind: &'static str },
+    Unknown {
+        /// Kind of quantum number being converted.
+        kind: &'static str,
+    },
+    /// The source value is a custom string that cannot be parsed as a number.
     #[error("{kind} has custom value {value:?}")]
-    Custom { kind: &'static str, value: String },
+    Custom {
+        /// Kind of quantum number being converted.
+        kind: &'static str,
+        /// Custom value that could not be converted.
+        value: String,
+    },
+    /// The rational value cannot be represented by the requested target type.
     #[error("{kind} value {numerator}/{denominator} cannot be represented as {target}")]
     OutOfRange {
+        /// Kind of quantum number being converted.
         kind: &'static str,
-        numerator: i64,
-        denominator: i64,
+        /// Rational numerator before conversion.
+        numerator: i32,
+        /// Rational denominator before conversion.
+        denominator: i32,
+        /// Target numeric type name.
         target: &'static str,
     },
 }
 
 trait RationalParts {
     fn kind(&self) -> &'static str;
-    fn rational_parts(&self) -> Result<(i64, i64), QuantumNumberConversionError>;
+    fn rational_parts(&self) -> Result<(i32, i32), QuantumNumberConversionError>;
 }
 
 impl RationalParts for Charge {
@@ -32,7 +52,7 @@ impl RationalParts for Charge {
         "charge"
     }
 
-    fn rational_parts(&self) -> Result<(i64, i64), QuantumNumberConversionError> {
+    fn rational_parts(&self) -> Result<(i32, i32), QuantumNumberConversionError> {
         Ok(match self {
             Self::PlusPlus => (2, 1),
             Self::Plus => (1, 1),
@@ -52,7 +72,7 @@ impl RationalParts for Isospin {
         "isospin"
     }
 
-    fn rational_parts(&self) -> Result<(i64, i64), QuantumNumberConversionError> {
+    fn rational_parts(&self) -> Result<(i32, i32), QuantumNumberConversionError> {
         match self {
             Self::I0 => Ok((0, 1)),
             Self::I1 => Ok((1, 2)),
@@ -69,7 +89,7 @@ impl RationalParts for AngularMomentum {
         "angular momentum"
     }
 
-    fn rational_parts(&self) -> Result<(i64, i64), QuantumNumberConversionError> {
+    fn rational_parts(&self) -> Result<(i32, i32), QuantumNumberConversionError> {
         Ok(match self {
             Self::J0 => (0, 1),
             Self::J1 => (1, 2),
@@ -105,7 +125,7 @@ impl RationalParts for Parity {
         "parity"
     }
 
-    fn rational_parts(&self) -> Result<(i64, i64), QuantumNumberConversionError> {
+    fn rational_parts(&self) -> Result<(i32, i32), QuantumNumberConversionError> {
         match self {
             Self::Plus => Ok((1, 1)),
             Self::Minus => Ok((-1, 1)),
@@ -114,9 +134,9 @@ impl RationalParts for Parity {
     }
 }
 
-fn to_f64<T: RationalParts>(value: T) -> Result<f64, QuantumNumberConversionError> {
+fn to_f64<T: RationalParts>(value: &T) -> Result<f64, QuantumNumberConversionError> {
     let (numerator, denominator) = value.rational_parts()?;
-    Ok(numerator as f64 / denominator as f64)
+    Ok(f64::from(numerator) / f64::from(denominator))
 }
 
 macro_rules! impl_f64_conversion {
@@ -125,7 +145,7 @@ macro_rules! impl_f64_conversion {
             type Error = QuantumNumberConversionError;
 
             fn try_from(value: $source) -> Result<Self, Self::Error> {
-                to_f64(value)
+                to_f64(&value)
             }
         }
 
@@ -133,7 +153,7 @@ macro_rules! impl_f64_conversion {
             type Error = QuantumNumberConversionError;
 
             fn try_from(value: &$source) -> Result<Self, Self::Error> {
-                to_f64(value.clone())
+                to_f64(value)
             }
         }
     };
@@ -145,7 +165,7 @@ impl_f64_conversion!(AngularMomentum);
 impl_f64_conversion!(Parity);
 
 #[cfg(feature = "ratio")]
-fn to_ratio<T, V>(value: V) -> Result<num::rational::Ratio<T>, QuantumNumberConversionError>
+fn to_ratio<T, V>(value: &V) -> Result<num::rational::Ratio<T>, QuantumNumberConversionError>
 where
     T: num::Integer + num::traits::NumCast + Clone + Display,
     V: RationalParts,
@@ -178,7 +198,7 @@ macro_rules! impl_ratio_conversion {
             type Error = QuantumNumberConversionError;
 
             fn try_from(value: $source) -> Result<Self, Self::Error> {
-                to_ratio(value)
+                to_ratio(&value)
             }
         }
 
@@ -189,7 +209,7 @@ macro_rules! impl_ratio_conversion {
             type Error = QuantumNumberConversionError;
 
             fn try_from(value: &$source) -> Result<Self, Self::Error> {
-                to_ratio(value.clone())
+                to_ratio(value)
             }
         }
     };
@@ -209,6 +229,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn converts_quantum_numbers_to_f64() {
         assert_eq!(f64::try_from(Charge::MinusOneThird).unwrap(), -1.0 / 3.0);
         assert_eq!(f64::try_from(Isospin::I3).unwrap(), 1.5);

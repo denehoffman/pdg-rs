@@ -4,24 +4,39 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 
 use crate::PdgError;
 
+/// Classification for a PDG numeric value row.
 #[derive(Debug, Copy, Clone)]
 pub enum ValueType {
+    /// A weighted average value.
     WeightedAverage,
+    /// The best limit selected by PDG.
     BestLimit,
+    /// A branching ratio value.
     BranchingRatio,
+    /// A PDG evaluation.
     PdgEvaluation,
+    /// A PDG limit.
     PdgLimit,
+    /// Extra material displayed below a value.
     ExtraBelow,
+    /// Extra material displayed above a value.
     ExtraAbove,
+    /// A fitted data value.
     FittedData,
+    /// A fitted decay-rate value.
     FittedDecayRate,
+    /// An estimated value.
     Estimate,
+    /// A default evaluation value.
     DefaultEvaluation,
+    /// An internal PDG value.
     Internal,
 }
 
 impl ValueType {
-    pub fn to_code(&self) -> &'static str {
+    /// Returns the compact PDG database code for this value type.
+    #[must_use]
+    pub const fn to_code(&self) -> &'static str {
         match self {
             Self::WeightedAverage => "AC",
             Self::BestLimit => "L",
@@ -90,23 +105,30 @@ impl FromSql for ValueType {
             ValueRef::Text(bytes) => {
                 let s =
                     std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
-                ValueType::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
+                Self::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
             }
             _ => Err(FromSqlError::InvalidType),
         }
     }
 }
 
+/// Type of bound or range represented by a data value.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LimitType {
+    /// An upper limit.
     UpperLimit,
+    /// A lower limit.
     LowerLimit,
+    /// A closed range.
     Range,
+    /// An excluded range.
     RangeExclusion,
 }
 
 impl LimitType {
-    pub fn to_code(&self) -> &'static str {
+    /// Returns the compact PDG database code for this limit type.
+    #[must_use]
+    pub const fn to_code(&self) -> &'static str {
         match self {
             Self::UpperLimit => "U",
             Self::LowerLimit => "L",
@@ -151,43 +173,73 @@ impl FromSql for LimitType {
             ValueRef::Text(bytes) => {
                 let s =
                     std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
-                LimitType::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
+                Self::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
             }
             _ => Err(FromSqlError::InvalidType),
         }
     }
 }
 
+/// Kind of data represented by a PDG identifier row.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DataType {
+    /// Electric dipole moment data.
     ElectricDipoleMoment,
+    /// Magnetic moment data.
     MagneticMoment,
+    /// CP-violation parameter data.
     CPViolationParameter,
+    /// Mass-difference data.
     MassDifference,
+    /// Form-factor data.
     FormFactor,
+    /// Mean-lifetime data.
     MeanLifetime,
+    /// Slope-parameter data.
     SlopeParameter,
+    /// Full-width data.
     FullWidth,
+    /// Mass data.
     Mass,
+    /// Coupling-constant ratio data.
     CouplingConstantRatio,
+    /// Decay-parameter data.
     DecayParameter,
+    /// Lifetime data.
     Lifetime,
+    /// Exclusive branching-fraction data.
     ExclusiveBranchingFraction,
+    /// Exclusive branching-fraction subtype 1.
     ExclusiveBranchingFraction1,
+    /// Exclusive branching-fraction subtype 2.
     ExclusiveBranchingFraction2,
+    /// Exclusive branching-fraction subtype 3.
     ExclusiveBranchingFraction3,
+    /// Exclusive branching-fraction subtype 4.
     ExclusiveBranchingFraction4,
+    /// Exclusive branching-fraction subtype 5.
     ExclusiveBranchingFraction5,
+    /// Inclusive branching-fraction data.
     InclusiveBranchingFraction,
+    /// Inclusive branching-fraction subtype 1.
     InclusiveBranchingFraction1,
+    /// Inclusive branching-fraction subtype 2.
     InclusiveBranchingFraction2,
+    /// Inclusive branching-fraction subtype 3.
     InclusiveBranchingFraction3,
+    /// Inclusive branching-fraction subtype 4.
     InclusiveBranchingFraction4,
+    /// Inclusive branching-fraction subtype 5.
     InclusiveBranchingFraction5,
+    /// Branching-ratio data.
     BranchingRatio,
+    /// Particle identity row.
     Particle,
+    /// Search-result or search-summary row.
     Searches,
+    /// Section heading row.
     Section,
+    /// Unknown or unclassified data.
     Other,
 }
 
@@ -197,7 +249,7 @@ impl FromSql for DataType {
             ValueRef::Text(bytes) => {
                 let s =
                     std::str::from_utf8(bytes).map_err(|err| FromSqlError::Other(Box::new(err)))?;
-                DataType::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
+                Self::from_str(s).map_err(|err| FromSqlError::Other(Box::new(err)))
             }
             _ => Err(FromSqlError::InvalidType),
         }
@@ -205,7 +257,9 @@ impl FromSql for DataType {
 }
 
 impl DataType {
-    pub fn to_code(&self) -> &'static str {
+    /// Returns the compact PDG database code for this data type.
+    #[must_use]
+    pub const fn to_code(&self) -> &'static str {
         match self {
             Self::ElectricDipoleMoment => "e",
             Self::MagneticMoment => "m",
@@ -239,7 +293,9 @@ impl DataType {
         }
     }
 
-    pub fn is_branching_fraction(&self) -> bool {
+    /// Returns `true` for inclusive and exclusive branching-fraction data types.
+    #[must_use]
+    pub const fn is_branching_fraction(&self) -> bool {
         matches!(
             self,
             Self::ExclusiveBranchingFraction
@@ -257,7 +313,9 @@ impl DataType {
         )
     }
 
-    pub fn is_particle_property(&self) -> bool {
+    /// Returns `true` for particle-level properties such as mass, width, and lifetime.
+    #[must_use]
+    pub const fn is_particle_property(&self) -> bool {
         !matches!(
             self,
             Self::BranchingRatio | Self::Particle | Self::Searches | Self::Section | Self::Other

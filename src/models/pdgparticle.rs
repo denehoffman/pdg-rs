@@ -3,7 +3,6 @@ use std::{
     fmt::Display,
 };
 
-use comfy_table::Table;
 use rusqlite::{
     OptionalExtension, Row, params_from_iter,
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
@@ -11,13 +10,17 @@ use rusqlite::{
 
 use crate::{
     DataEntry, DataType, LATEST_EDITION, Pdg, PdgFootnote, PdgId, PdgItem, PdgMeasurement,
-    PdgResult, PdgText, table,
+    PdgResult, PdgText,
 };
 
+/// Particle/antiparticle relationship encoded by the PDG particle table.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ParticleType {
+    /// Particle entry.
     Particle,
+    /// Antiparticle entry.
     Antiparticle,
+    /// Self-conjugate particle entry.
     SelfConjugate,
 }
 
@@ -36,7 +39,9 @@ impl Display for ParticleType {
 }
 
 impl ParticleType {
-    pub(crate) fn code(self) -> &'static str {
+    /// Returns the compact PDG database code for this particle type.
+    #[must_use]
+    pub const fn to_code(self) -> &'static str {
         match self {
             Self::Particle => "P",
             Self::Antiparticle => "A",
@@ -63,17 +68,25 @@ impl FromSql for ParticleType {
     }
 }
 
+/// Broad PDG particle class.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ParticleClass {
+    /// Gauge or Higgs boson.
     GaugeBoson,
+    /// Lepton.
     Lepton,
+    /// Quark.
     Quark,
+    /// Meson.
     Meson,
+    /// Baryon.
     Baryon,
 }
 
 impl ParticleClass {
-    pub(crate) fn flag(self) -> &'static str {
+    /// Returns the compact PDG database code for this particle class.
+    #[must_use]
+    pub const fn to_code(self) -> &'static str {
         match self {
             Self::GaugeBoson => "G",
             Self::Lepton => "L",
@@ -120,16 +133,26 @@ impl FromSql for ParticleClass {
     }
 }
 
+/// Electric charge in units of the positron charge.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Charge {
+    /// Charge `+2`.
     PlusPlus,
+    /// Charge `+1`.
     Plus,
+    /// Charge `0`.
     Neutral,
+    /// Charge `-1`.
     Minus,
+    /// Charge `-2`.
     MinusMinus,
+    /// Charge `+1/3`.
     PlusOneThird,
+    /// Charge `+2/3`.
     PlusTwoThirds,
+    /// Charge `-1/3`.
     MinusOneThird,
+    /// Charge `-2/3`.
     MinusTwoThirds,
 }
 
@@ -156,7 +179,7 @@ impl Display for Charge {
 impl FromSql for Charge {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
         match value {
-            ValueRef::Real(v) => Charge::from_f64(v).ok_or(FromSqlError::InvalidType),
+            ValueRef::Real(v) => Self::from_f64(v).ok_or(FromSqlError::InvalidType),
             _ => Err(FromSqlError::InvalidType),
         }
     }
@@ -195,13 +218,20 @@ impl Charge {
     }
 }
 
+/// Isospin quantum number.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Isospin {
+    /// Isospin `0`.
     I0,
+    /// Isospin `1/2`.
     I1,
+    /// Isospin `1`.
     I2,
+    /// Isospin `3/2`.
     I3,
+    /// Ambiguous photon-like value `0 or 1`.
     Photon,
+    /// Unknown isospin.
     Unknown,
 }
 
@@ -243,25 +273,44 @@ impl FromSql for Isospin {
     }
 }
 
+/// Angular momentum quantum number.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AngularMomentum {
+    /// Angular momentum `0`.
     J0,
+    /// Angular momentum `1/2`.
     J1,
+    /// Angular momentum `1`.
     J2,
+    /// Angular momentum `3/2`.
     J3,
+    /// Angular momentum `2`.
     J4,
+    /// Angular momentum `5/2`.
     J5,
+    /// Angular momentum `3`.
     J6,
+    /// Angular momentum `7/2`.
     J7,
+    /// Angular momentum `4`.
     J8,
+    /// Angular momentum `9/2`.
     J9,
+    /// Angular momentum `5`.
     J10,
+    /// Angular momentum `11/2`.
     J11,
+    /// Angular momentum `6`.
     J12,
+    /// Angular momentum `13/2`.
     J13,
+    /// Angular momentum `7`.
     J14,
+    /// Angular momentum `15/2`.
     J15,
+    /// Custom angular momentum text from the PDG database.
     Custom(String),
+    /// Unknown angular momentum.
     Unknown,
 }
 
@@ -326,10 +375,14 @@ impl FromSql for AngularMomentum {
     }
 }
 
+/// Discrete parity-like quantum number.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Parity {
+    /// Positive parity.
     Plus,
+    /// Negative parity.
     Minus,
+    /// Unknown parity.
     Unknown,
 }
 
@@ -365,34 +418,57 @@ impl FromSql for Parity {
     }
 }
 
+/// Particle row from the PDG database.
 #[derive(Debug, Clone)]
 pub struct PdgParticle<'pdg> {
     pub(crate) db: &'pdg Pdg,
+    /// PDG identifier for the particle row.
     pub pdgid: PdgId,
+    /// PDG item name.
     pub name: String,
+    /// Human-readable PDG description.
     pub description: String,
+    /// Particle/antiparticle relationship.
     pub particle_type: ParticleType,
+    /// Broad particle class.
     pub particle_class: ParticleClass,
+    /// Monte Carlo particle ID, when assigned.
     pub mcid: Option<isize>,
+    /// Electric charge.
     pub charge: Charge,
+    /// Isospin quantum number.
     pub quantum_i: Option<Isospin>,
+    /// G-parity quantum number.
     pub quantum_g: Option<Parity>,
+    /// Angular momentum quantum number.
     pub quantum_j: Option<AngularMomentum>,
+    /// Parity quantum number.
     pub quantum_p: Option<Parity>,
+    /// Charge-conjugation parity quantum number.
     pub quantum_c: Option<Parity>,
 }
 
+/// Particle property value and its provenance.
 #[derive(Clone, Debug)]
 pub struct ParticleProperty<'pdg> {
+    /// Data type for the property.
     pub data_type: DataType,
+    /// Data value for the property.
     pub value: DataEntry<'pdg>,
+    /// Where the property was found.
     pub source: PropertySource,
 }
 
+/// Source of a [`ParticleProperty`].
 #[derive(Clone, Debug)]
 pub enum PropertySource {
+    /// The property is stored directly under the particle identifier.
     Direct,
-    Section { section_pdgid: PdgId },
+    /// The property is stored under a child section.
+    Section {
+        /// PDG identifier of the section containing the property.
+        section_pdgid: PdgId,
+    },
 }
 
 impl Display for PropertySource {
@@ -460,63 +536,20 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
-    pub fn headline_properties(&self) -> PdgResult<Vec<ParticleProperty<'pdg>>> {
-        let mut rows = Vec::new();
-
-        for data_type in [DataType::Mass, DataType::Lifetime, DataType::FullWidth] {
-            if let Some(property) = self.property(data_type)? {
-                rows.push(property);
-            }
-        }
-
-        for section in self.db.children_for_pdgid(&self.pdgid)? {
-            if !matches!(section.data_type, DataType::Section) {
-                continue;
-            }
-            for child in self.db.children_for_pdgid(&section.pdgid)? {
-                if !child.data_type.is_particle_property() {
-                    continue;
-                }
-                if matches!(
-                    child.data_type,
-                    DataType::Mass | DataType::Lifetime | DataType::FullWidth
-                ) {
-                    continue;
-                }
-                if rows
-                    .iter()
-                    .any(|property| property.data_type == child.data_type)
-                {
-                    continue;
-                }
-                if let Some(property) = self.section_property(&section, &child)? {
-                    rows.push(property);
-                }
-            }
-        }
-
-        Ok(rows)
-    }
-
-    pub fn headline_property_rows(&self) -> PdgResult<Vec<[String; 4]>> {
-        Ok(self
-            .headline_properties()?
-            .into_iter()
-            .map(|property| {
-                [
-                    property.data_type.to_string(),
-                    property.value.to_string(),
-                    property.value.pdgid.clone(),
-                    property.source.to_string(),
-                ]
-            })
-            .collect())
-    }
-
+    /// Returns a latest-edition property stored directly under this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the data query fails.
     pub fn direct_property(&self, data_type: DataType) -> PdgResult<Option<DataEntry<'pdg>>> {
         self.query(data_type, LATEST_EDITION)
     }
 
+    /// Returns a latest-edition property, checking direct and section data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if data or child identifier queries fail.
     pub fn property(&self, data_type: DataType) -> PdgResult<Option<ParticleProperty<'pdg>>> {
         if let Some(value) = self.direct_property(data_type)? {
             return Ok(Some(ParticleProperty {
@@ -555,69 +588,11 @@ impl<'pdg> PdgParticle<'pdg> {
         }))
     }
 
-    fn property_summary(&self) -> PdgResult<[String; 3]> {
-        let mut mass = String::new();
-        let mut lifetime = String::new();
-        let mut width = String::new();
-
-        if let Some(property) = self.property(DataType::Mass)? {
-            mass = property.value.to_string();
-        }
-        if let Some(property) = self.property(DataType::Lifetime)? {
-            lifetime = property.value.to_string();
-        }
-        if let Some(property) = self.property(DataType::FullWidth)? {
-            width = property.value.to_string();
-        }
-
-        Ok([mass, lifetime, width])
-    }
-
-    pub fn make_table(particles: &[Self], full: bool) -> PdgResult<Table> {
-        let mut table = table();
-        if full {
-            table.set_header([
-                "PDG ID", "Name", "Class", "Type", "MCID", "Mass", "Lifetime", "Width", "Quantum",
-            ]);
-            for particle in particles {
-                let [mass, lifetime, width] = particle.property_summary()?;
-                table.add_row([
-                    particle.pdgid.clone(),
-                    particle.name.clone(),
-                    particle.particle_class.to_string(),
-                    particle.particle_type.to_string(),
-                    particle
-                        .mcid
-                        .map(|value| value.to_string())
-                        .unwrap_or_default(),
-                    mass,
-                    lifetime,
-                    width,
-                    particle.quantum_summary(),
-                ]);
-            }
-        } else {
-            table.set_header(["Name", "PDG ID", "Class", "Type", "MCID", "Quantum"]);
-            for particle in particles {
-                table.add_row([
-                    particle.name.clone(),
-                    particle.pdgid.clone(),
-                    particle.particle_class.to_string(),
-                    particle.particle_type.to_string(),
-                    particle
-                        .mcid
-                        .map(|value| value.to_string())
-                        .unwrap_or_default(),
-                    particle.quantum_summary(),
-                ]);
-            }
-        }
-        Ok(table)
-    }
-
+    /// Returns a compact display string for charge and available quantum numbers.
+    #[must_use]
     pub fn quantum_summary(&self) -> String {
         [
-            Some(format!("Q={}", self.charge.to_string())),
+            Some(format!("Q={}", self.charge)),
             self.quantum_i.as_ref().map(|value| format!("I={value}")),
             self.quantum_g.as_ref().map(|value| format!("G={value}")),
             self.quantum_j.as_ref().map(|value| format!("J={value}")),
@@ -630,27 +605,57 @@ impl<'pdg> PdgParticle<'pdg> {
         .join(", ")
     }
 
+    /// Loads text blocks attached to this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the text query fails.
     pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
         self.db.texts_for(&self.pdgid)
     }
 
+    /// Loads footnotes attached to this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the footnote query fails.
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
         self.db.footnotes_for(&self.pdgid)
     }
 
+    /// Loads the item hierarchy node for this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the item query fails.
     pub fn item(&self) -> PdgResult<Option<PdgItem<'pdg>>> {
         self.db.item(&self.name)
     }
 
+    /// Loads child items for this particle's item name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the item hierarchy query fails.
     pub fn item_children(&self) -> PdgResult<Vec<crate::PdgItemChild<'pdg>>> {
         self.db.item_children(&self.name)
     }
 
+    /// Loads parent items for this particle's item name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the item hierarchy query fails.
     pub fn parent_items(&self) -> PdgResult<Vec<PdgItem<'pdg>>> {
         self.db.item_parents(&self.name)
     }
 
-    pub fn related_particles(&self) -> PdgResult<Vec<PdgParticle<'pdg>>> {
+    /// Returns sibling particles related through the item hierarchy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if hierarchy or particle queries fail.
+    pub fn related_particles(&self) -> PdgResult<Vec<Self>> {
         let mut related_particles = Vec::new();
         let mut seen = HashSet::new();
         seen.insert(self.name.clone());
@@ -669,6 +674,11 @@ impl<'pdg> PdgParticle<'pdg> {
         Ok(related_particles)
     }
 
+    /// Loads measurements supporting a property data type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the property or measurement queries fail.
     pub fn measurements_for(&self, data_type: DataType) -> PdgResult<Vec<PdgMeasurement>> {
         Ok(match self.property(data_type)? {
             Some(property) => self.db.measurements_for(property.value.pdgid)?,
@@ -676,21 +686,42 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
+    /// Returns the latest-edition mass entry, if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the property query fails.
     pub fn mass(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
         Ok(self
             .property(DataType::Mass)?
             .map(|property| property.value))
     }
+    /// Returns the latest-edition lifetime entry, if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the property query fails.
     pub fn lifetime(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
         Ok(self
             .property(DataType::Lifetime)?
             .map(|property| property.value))
     }
+    /// Returns the latest-edition full-width entry, if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the property query fails.
     pub fn width(&self) -> PdgResult<Option<DataEntry<'pdg>>> {
         Ok(self
             .property(DataType::FullWidth)?
             .map(|property| property.value))
     }
+    /// Returns exclusive and inclusive branching fractions for this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if branching data, decay products, or related
+    /// data cannot be loaded.
     pub fn branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
             (
@@ -749,6 +780,12 @@ impl<'pdg> PdgParticle<'pdg> {
             .map(|branching_fraction| branching_fraction.data)
             .collect())
     }
+    /// Returns exclusive branching fractions for this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if branching data, decay products, or related
+    /// data cannot be loaded.
     pub fn exclusive_branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
             (
@@ -783,6 +820,12 @@ impl<'pdg> PdgParticle<'pdg> {
             .map(|branching_fraction| branching_fraction.data)
             .collect())
     }
+    /// Returns inclusive branching fractions for this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if branching data, decay products, or related
+    /// data cannot be loaded.
     pub fn inclusive_branching_fractions(&self) -> PdgResult<Vec<BranchingFraction<'pdg>>> {
         let mut branching_fractions = self.branching_fractions_for(&[
             (
@@ -817,6 +860,11 @@ impl<'pdg> PdgParticle<'pdg> {
             .map(|branching_fraction| branching_fraction.data)
             .collect())
     }
+    /// Returns branching-ratio rows for this particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if branching-ratio data cannot be loaded.
     pub fn branching_ratios(&self) -> PdgResult<Vec<BranchingRatio<'pdg>>> {
         Ok(self
             .decay_data(DataType::BranchingRatio, LATEST_EDITION)?
@@ -829,6 +877,13 @@ impl<'pdg> PdgParticle<'pdg> {
             })
             .collect())
     }
+    /// Queries all latest matching data entries and maps them through `predicate`.
+    ///
+    /// Entries for which `predicate` returns `None` are omitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the data query fails.
     pub fn query_all_map<P, T>(
         &self,
         data_type: DataType,
@@ -844,6 +899,11 @@ impl<'pdg> PdgParticle<'pdg> {
             .filter_map(predicate)
             .collect())
     }
+    /// Queries the first matching data entry and maps it through `predicate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the data query fails.
     pub fn query_map<P, T>(
         &self,
         data_type: DataType,
@@ -853,8 +913,13 @@ impl<'pdg> PdgParticle<'pdg> {
     where
         P: Fn(DataEntry<'pdg>) -> Option<T>,
     {
-        Ok(self.query(data_type, edition)?.map(predicate).flatten())
+        Ok(self.query(data_type, edition)?.and_then(predicate))
     }
+    /// Returns all data entries of `data_type` for a PDG edition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the data query fails.
     pub fn query_all(
         &self,
         data_type: DataType,
@@ -871,6 +936,11 @@ impl<'pdg> PdgParticle<'pdg> {
             })?
             .collect::<Result<Vec<_>, _>>()?)
     }
+    /// Returns the first data entry of `data_type` for a PDG edition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the data query fails.
     pub fn query(
         &self,
         data_type: DataType,
@@ -961,7 +1031,7 @@ impl<'pdg> PdgParticle<'pdg> {
                     db: self.db,
                     name: row.get(1)?,
                     is_outgoing: row.get(2)?,
-                    multiplier: row.get::<_, i64>(3)? as usize,
+                    multiplier: row.get::<_, i64>(3)?,
                 },
             ))
         })?;
@@ -1033,9 +1103,9 @@ impl<'pdg> PdgParticle<'pdg> {
 struct DecayData<'pdg> {
     pdgid: PdgId,
     description: String,
-    mode_number: Option<usize>,
+    mode_number: Option<u32>,
     data: DataEntry<'pdg>,
-    sort: usize,
+    sort: u32,
 }
 
 impl<'pdg> DecayData<'pdg> {
@@ -1044,11 +1114,9 @@ impl<'pdg> DecayData<'pdg> {
         Ok(Self {
             pdgid: data.pdgid.clone(),
             description: row.get(DataEntry::COLUMN_COUNT)?,
-            mode_number: row
-                .get::<_, Option<isize>>(DataEntry::COLUMN_COUNT + 1)?
-                .map(|mode_number| mode_number as usize),
+            mode_number: row.get::<_, Option<u32>>(DataEntry::COLUMN_COUNT + 1)?,
             data,
-            sort: row.get::<_, isize>(DataEntry::COLUMN_COUNT + 2)? as usize,
+            sort: row.get::<_, u32>(DataEntry::COLUMN_COUNT + 2)?,
         })
     }
 }
@@ -1056,81 +1124,137 @@ impl<'pdg> DecayData<'pdg> {
 #[derive(Debug)]
 struct BranchingFractionWithSort<'pdg> {
     data: BranchingFraction<'pdg>,
-    sort: usize,
+    sort: u32,
 }
 
+/// Whether a branching fraction is exclusive or inclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchingFractionKind {
+    /// Exclusive branching fraction.
     Exclusive,
+    /// Inclusive branching fraction.
     Inclusive,
 }
 
 impl Display for BranchingFractionKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            BranchingFractionKind::Exclusive => "Exclusive",
-            BranchingFractionKind::Inclusive => "Inclusive",
+            Self::Exclusive => "Exclusive",
+            Self::Inclusive => "Inclusive",
         })
     }
 }
 
+/// Decay product listed for a branching-fraction row.
 #[derive(Debug, Clone)]
 pub struct DecayProduct<'pdg> {
     pub(crate) db: &'pdg Pdg,
+    /// PDG item name for the product.
     pub name: String,
+    /// Whether this product is outgoing from the decay.
     pub is_outgoing: bool,
-    pub multiplier: usize,
+    /// Multiplicity of this product in the decay row.
+    pub multiplier: i64,
 }
 
 impl<'pdg> DecayProduct<'pdg> {
+    /// Loads the PDG item for this decay product.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the item query fails.
     pub fn item(&self) -> PdgResult<Option<PdgItem<'pdg>>> {
         self.db.item(&self.name)
     }
 
+    /// Loads the particle for this decay product, when it names a particle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the particle query fails.
     pub fn particle(&self) -> PdgResult<Option<PdgParticle<'pdg>>> {
         self.db.particle(&self.name)
     }
 
+    /// Loads child items for this decay product name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the hierarchy query fails.
     pub fn children(&self) -> PdgResult<Vec<crate::PdgItemChild<'pdg>>> {
         self.db.item_children(&self.name)
     }
 
+    /// Loads parent items for this decay product name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the hierarchy query fails.
     pub fn parents(&self) -> PdgResult<Vec<PdgItem<'pdg>>> {
         self.db.item_parents(&self.name)
     }
 }
 
+/// Branching-fraction data for a particle decay mode.
 #[derive(Debug, Clone)]
 pub struct BranchingFraction<'pdg> {
+    /// PDG identifier for the branching-fraction row.
     pub pdgid: PdgId,
+    /// Human-readable decay description.
     pub description: String,
-    pub mode_number: Option<usize>,
+    /// PDG mode number, when available.
+    pub mode_number: Option<u32>,
+    /// Numeric value for the branching fraction.
     pub value: DataEntry<'pdg>,
+    /// Exclusive or inclusive branching-fraction kind.
     pub kind: BranchingFractionKind,
+    /// Decay products attached to the branching-fraction row.
     pub products: Vec<DecayProduct<'pdg>>,
+    /// Other data rows mapped to this branching-fraction row.
     pub related_data: Vec<RelatedDataEntry<'pdg>>,
 }
 
-impl<'pdg> BranchingFraction<'pdg> {
+impl BranchingFraction<'_> {
+    /// Loads measurements supporting this branching fraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the measurement query fails.
     pub fn measurements(&self) -> PdgResult<Vec<PdgMeasurement>> {
         self.value.measurements()
     }
 
+    /// Loads footnotes attached to this branching fraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the footnote query fails.
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
         self.value.footnotes()
     }
 
+    /// Loads text blocks attached to this branching fraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the text query fails.
     pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
         self.value.texts()
     }
 }
 
+/// Data row related to a branching fraction through the PDG mapping table.
 #[derive(Debug, Clone)]
 pub struct RelatedDataEntry<'pdg> {
+    /// PDG identifier for the related row.
     pub pdgid: PdgId,
+    /// Human-readable PDG description.
     pub description: String,
+    /// Data type for the related row.
     pub data_type: DataType,
-    pub mode_number: Option<usize>,
+    /// PDG mode number, when available.
+    pub mode_number: Option<u32>,
+    /// Numeric value for the related row.
     pub value: DataEntry<'pdg>,
 }
 
@@ -1140,44 +1264,77 @@ impl<'pdg> RelatedDataEntry<'pdg> {
         Ok(Self {
             pdgid: data.pdgid.clone(),
             description: row.get(DataEntry::COLUMN_COUNT)?,
-            mode_number: row
-                .get::<_, Option<isize>>(DataEntry::COLUMN_COUNT + 1)?
-                .map(|mode_number| mode_number as usize),
+            mode_number: row.get::<_, Option<u32>>(DataEntry::COLUMN_COUNT + 1)?,
             data_type: row.get(DataEntry::COLUMN_COUNT + 2)?,
             value: data,
         })
     }
 
+    /// Loads measurements supporting this related data row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the measurement query fails.
     pub fn measurements(&self) -> PdgResult<Vec<PdgMeasurement>> {
         self.value.measurements()
     }
 
+    /// Loads footnotes attached to this related data row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the footnote query fails.
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
         self.value.footnotes()
     }
 
+    /// Loads text blocks attached to this related data row.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the text query fails.
     pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
         self.value.texts()
     }
 }
 
+/// Branching-ratio data for a particle.
 #[derive(Debug, Clone)]
 pub struct BranchingRatio<'pdg> {
+    /// PDG identifier for the branching-ratio row.
     pub pdgid: PdgId,
+    /// Human-readable PDG description.
     pub description: String,
-    pub mode_number: Option<usize>,
+    /// PDG mode number, when available.
+    pub mode_number: Option<u32>,
+    /// Numeric value for the branching ratio.
     pub value: DataEntry<'pdg>,
 }
 
-impl<'pdg> BranchingRatio<'pdg> {
+impl BranchingRatio<'_> {
+    /// Loads measurements supporting this branching ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the measurement query fails.
     pub fn measurements(&self) -> PdgResult<Vec<PdgMeasurement>> {
         self.value.measurements()
     }
 
+    /// Loads footnotes attached to this branching ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the footnote query fails.
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
         self.value.footnotes()
     }
 
+    /// Loads text blocks attached to this branching ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the text query fails.
     pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
         self.value.texts()
     }
@@ -1836,7 +1993,7 @@ mod tests {
         let lifetime = pion.lifetime().unwrap().unwrap();
 
         assert!(mass.value.unwrap() > 100.0);
-        assert!(lifetime.value.unwrap() < 0.000001);
+        assert!(lifetime.value.unwrap() < 0.000_001);
     }
 
     #[test]
@@ -2064,7 +2221,7 @@ mod tests {
         let mass = pion.mass().unwrap().unwrap();
 
         let entry_measurements = mass.measurements().unwrap();
-        let direct_measurements = db.measurements_for(mass.pdgid.clone()).unwrap();
+        let direct_measurements = db.measurements_for(mass.pdgid).unwrap();
 
         assert_eq!(entry_measurements.len(), direct_measurements.len());
         assert_eq!(

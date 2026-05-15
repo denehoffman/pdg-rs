@@ -9,8 +9,7 @@ pub use pdgparticle::{
 };
 
 mod pdgsearch;
-pub(crate) use pdgsearch::QuantumFilter;
-pub use pdgsearch::{DecayMatchMode, DecayStateExpansion, ParticleSearchQuery};
+pub use pdgsearch::{DecayMatchMode, DecayStateExpansion, ParticleSearchQuery, QuantumFilter};
 
 mod pdgdata;
 pub use pdgdata::DataEntry;
@@ -27,4 +26,5 @@ pub use pdgmeasurement::{PdgMeasurement, PdgMeasurementValue, PdgReference};
 mod conversions;
 pub use conversions::QuantumNumberConversionError;
 
+/// Identifier used by the PDG database for particles, properties, sections, and decay modes.
 pub type PdgId = String;

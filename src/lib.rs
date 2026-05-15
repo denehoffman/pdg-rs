@@ -1,4 +1,7 @@
-use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
+#![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
+#![allow(clippy::empty_docs)]
+#![doc = ""]
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
 
@@ -7,26 +10,54 @@ pub use models::*;
 
 static PDG_BYTES: &[u8] = include_bytes!("../data/pdgall-2025-v0.2.2.sqlite");
 
-pub const LATEST_EDITION: &'static str = "2025";
+/// The PDG edition bundled with this crate.
+pub const LATEST_EDITION: &str = "2025";
 
+/// Result type returned by fallible `pdg-rs` operations.
 pub type PdgResult<T> = Result<T, PdgError>;
 
+/// Errors returned by database access, code parsing, and quantum number conversion.
 #[derive(Error, Debug)]
 pub enum PdgError {
+    /// A `SQLite` error from the embedded PDG database.
     #[error(transparent)]
     SqliteError(#[from] rusqlite::Error),
+    /// A value type code was not recognized.
     #[error("Failed to parse ValueType: {0}")]
     ParseValueType(String),
+    /// A limit type code was not recognized.
     #[error("Failed to parse LimitType: {0}")]
     ParseLimitType(String),
+    /// A data type code was not recognized.
     #[error("Failed to parse DataType: {0}")]
     ParseDataType(String),
+    /// A quantum number could not be converted into the requested numeric representation.
     #[error(transparent)]
     QuantumNumberConversion(#[from] QuantumNumberConversionError),
+    /// An application-specific error message.
     #[error("Custom error: {0}")]
     Custom(String),
 }
 
+/// Handle for querying the bundled Particle Data Group database.
+///
+/// Create a handle with [`Pdg::open`], then use lookup methods such as
+/// [`Pdg::particle`], [`Pdg::mcid`], [`Pdg::search_particles`], and
+/// [`Pdg::search_text`] to retrieve typed records.
+///
+/// # Examples
+///
+/// ```no_run
+/// use pdg_rs::Pdg;
+///
+/// # fn main() -> pdg_rs::PdgResult<()> {
+/// let pdg = Pdg::open()?;
+/// let pion = pdg.particle("pi+")?.expect("pi+ is in the PDG database");
+///
+/// assert_eq!(pion.name, "pi+");
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Pdg {
     conn: Connection,
@@ -37,6 +68,15 @@ impl Pdg {
     const PARTICLE_JOIN: &'static str =
         "JOIN pdgid ON pdgid.pdgid = pdgparticle.pdgid AND pdgid.data_type = 'PART'";
 
+    /// Opens the bundled PDG `SQLite` database in memory.
+    ///
+    /// This also initializes the temporary full-text search index used by
+    /// [`Pdg::search_text`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdgError::SqliteError`] if the embedded database cannot be
+    /// deserialized or initialized.
     pub fn open() -> PdgResult<Self> {
         let mut conn = Connection::open_in_memory()?;
         conn.deserialize_bytes(MAIN_DB, PDG_BYTES)?;
@@ -45,7 +85,13 @@ impl Pdg {
         Ok(pdg)
     }
 
-    pub fn db(&self) -> &Connection {
+    /// Returns the underlying `SQLite` connection.
+    ///
+    /// This is useful for advanced queries that are not covered by the typed
+    /// API. Prefer the typed methods where possible because they preserve links
+    /// back to this [`Pdg`] handle.
+    #[must_use]
+    pub const fn db(&self) -> &Connection {
         &self.conn
     }
 
@@ -75,6 +121,14 @@ impl Pdg {
         Ok(())
     }
 
+    /// Looks up a particle by its PDG item name.
+    ///
+    /// Use [`Pdg::particle_by_pdgid`] when you already have a PDG identifier,
+    /// or [`Pdg::mcid`] when you have a Monte Carlo particle ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn particle(&self, name: impl Into<String>) -> PdgResult<Option<PdgParticle<'_>>> {
         let name = name.into();
         let sql = format!(
@@ -88,6 +142,11 @@ impl Pdg {
             .optional()?)
     }
 
+    /// Looks up a particle by PDG identifier, case-insensitively.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn particle_by_pdgid(
         &self,
         pdgid: impl Into<String>,
@@ -104,6 +163,14 @@ impl Pdg {
             .optional()?)
     }
 
+    /// Looks up raw metadata for a PDG identifier.
+    ///
+    /// This returns a [`PdgIdEntry`] for any PDG row type, not just particle
+    /// rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn pdgid(&self, pdgid: impl Into<String>) -> PdgResult<Option<PdgIdEntry>> {
         let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
@@ -116,8 +183,32 @@ impl Pdg {
             .optional()?)
     }
 
+    /// Searches descriptions, text blocks, and footnotes with `SQLite` FTS5.
+    ///
+    /// Non-alphanumeric separators are normalized into individual quoted search
+    /// terms before querying the index.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use pdg_rs::{Pdg, TextSearchSource};
+    ///
+    /// # fn main() -> pdg_rs::PdgResult<()> {
+    /// let pdg = Pdg::open()?;
+    /// let results = pdg.search_text("K(S)0 mean life")?;
+    ///
+    /// assert!(results.iter().any(|result| {
+    ///     result.source == TextSearchSource::Description
+    /// }));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the search query cannot be executed.
     pub fn search_text(&self, query: impl Into<String>) -> PdgResult<Vec<TextSearchResult>> {
-        let Some(query) = fts_query(query.into()) else {
+        let Some(query) = fts_query(&query.into()) else {
             return Ok(Vec::new());
         };
 
@@ -180,6 +271,11 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Looks up a particle by its Monte Carlo particle ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn mcid(&self, mcid: isize) -> PdgResult<Option<PdgParticle<'_>>> {
         let sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE mcid = ?1",
@@ -192,6 +288,31 @@ impl Pdg {
             .optional()?)
     }
 
+    #[allow(clippy::too_many_lines)]
+    /// Searches particles using a [`ParticleSearchQuery`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use pdg_rs::{Charge, ParticleClass, ParticleSearchQuery, Pdg};
+    ///
+    /// # fn main() -> pdg_rs::PdgResult<()> {
+    /// let pdg = Pdg::open()?;
+    /// let charged_mesons = pdg.search_particles(
+    ///     ParticleSearchQuery::new()
+    ///         .class(ParticleClass::Meson)
+    ///         .charge(Charge::Plus),
+    /// )?;
+    ///
+    /// assert!(charged_mesons.iter().any(|particle| particle.name == "pi+"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if any particle, property, or decay filter query
+    /// cannot be executed.
     pub fn search_particles(&self, query: ParticleSearchQuery) -> PdgResult<Vec<PdgParticle<'_>>> {
         let mut sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE 1 = 1",
@@ -213,12 +334,12 @@ impl Pdg {
 
         if let Some(particle_class) = query.particle_class {
             sql.push_str(" AND pdgid.flags = ?");
-            params.push(Value::Text(particle_class.flag().to_string()));
+            params.push(Value::Text(particle_class.to_code().to_string()));
         }
 
         if let Some(particle_type) = query.particle_type {
             sql.push_str(" AND cc_type = ?");
-            params.push(Value::Text(particle_type.code().to_string()));
+            params.push(Value::Text(particle_type.to_code().to_string()));
         }
 
         if let Some(charge) = query.charge {
@@ -309,6 +430,14 @@ impl Pdg {
         Ok(filtered_particles)
     }
 
+    /// Looks up a PDG item by name.
+    ///
+    /// Items include particles, groups, aliases, charge multiplets, and other
+    /// names used to organize decays.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn item(&self, name: impl Into<String>) -> PdgResult<Option<PdgItem<'_>>> {
         let name = name.into();
         let mut stmt = self
@@ -319,6 +448,12 @@ impl Pdg {
             .optional()?)
     }
 
+    /// Returns child items for a PDG item name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the item map or particle lookup cannot be
+    /// queried.
     pub fn item_children(&self, name: impl Into<String>) -> PdgResult<Vec<PdgItemChild<'_>>> {
         let name = name.into();
         let child_items = {
@@ -347,6 +482,11 @@ impl Pdg {
             .collect()
     }
 
+    /// Returns parent items for a PDG item name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn item_parents(&self, name: impl Into<String>) -> PdgResult<Vec<PdgItem<'_>>> {
         let name = name.into();
         let mut stmt = self.conn.prepare(
@@ -357,6 +497,11 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Returns PDG identifier rows whose parent is `pdgid`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn children_for_pdgid(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgIdEntry>> {
         let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
@@ -370,6 +515,11 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Returns PDG identifier rows linked from `pdgid` through the mapping table.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn mapped_entries_for_pdgid(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgIdEntry>> {
         let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
@@ -384,6 +534,11 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Returns latest-edition numeric data rows for a PDG identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn data_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<DataEntry<'_>>> {
         let pdgid = pdgid.into();
         let sql = format!(
@@ -398,6 +553,11 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Returns text blocks attached to a PDG identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn texts_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgText>> {
         let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
@@ -408,6 +568,11 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Returns footnotes attached to a PDG identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query cannot be executed.
     pub fn footnotes_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgFootnote>> {
         let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
@@ -418,6 +583,12 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Returns measurement rows, values, references, and footnotes for a PDG identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if measurement, value, or footnote queries cannot
+    /// be executed.
     pub fn measurements_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgMeasurement>> {
         let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
@@ -478,7 +649,7 @@ impl Pdg {
                         AND pdgdecay.name IN ({placeholders})
                 )"
             ));
-            params.push(Value::Integer(if is_outgoing { 1 } else { 0 }));
+            params.push(Value::Integer(i64::from(is_outgoing)));
             params.extend(names.into_iter().map(Value::Text));
         }
 
@@ -528,7 +699,7 @@ impl Pdg {
                 Ok((
                     row.get::<_, PdgId>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)? as usize,
+                    row.get::<_, i64>(2)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -752,10 +923,7 @@ fn matches_data_range(
 
     entries
         .iter()
-        .any(|entry| match data_interval(entry, unit) {
-            Some(interval) => interval.overlaps(min, max),
-            None => true,
-        })
+        .any(|entry| data_interval(entry, unit).is_none_or(|interval| interval.overlaps(min, max)))
 }
 
 fn exact_decay_products_match(requested: &[Vec<String>], products: &[String]) -> bool {
@@ -872,8 +1040,7 @@ fn parse_numbers(text: &str) -> Vec<f64> {
 
         let end = chars
             .get(end_index)
-            .map(|(char_index, _)| *char_index)
-            .unwrap_or(text.len());
+            .map_or(text.len(), |(char_index, _)| *char_index);
         if let Ok(value) = text[start..end].parse::<f64>() {
             numbers.push(value);
         }
@@ -888,8 +1055,8 @@ fn unit_factor(unit_text: &str, unit: Unit) -> Option<f64> {
             "MeV" => Some(1.0),
             "GeV" => Some(1000.0),
             "keV" => Some(0.001),
-            "eV" => Some(0.000001),
-            "u" => Some(931.49410242),
+            "eV" => Some(0.000_001),
+            "u" => Some(931.494_102_42),
             _ => None,
         },
         Unit::Seconds => match unit_text {
@@ -900,7 +1067,7 @@ fn unit_factor(unit_text: &str, unit: Unit) -> Option<f64> {
     }
 }
 
-fn fts_query(query: String) -> Option<String> {
+fn fts_query(query: &str) -> Option<String> {
     let mut terms = Vec::new();
     let mut term = String::new();
     for ch in query.chars() {
@@ -921,14 +1088,6 @@ fn fts_query(query: String) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" ")
     })
-}
-
-pub fn table() -> Table {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::DynamicFullWidth);
-    table
 }
 
 #[cfg(test)]

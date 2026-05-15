@@ -1,6 +1,5 @@
 use assert_cmd::Command;
-use predicates::prelude::PredicateBooleanExt;
-use predicates::str::contains;
+use predicates::{prelude::PredicateBooleanExt, str::contains};
 
 #[test]
 fn help_mentions_only_canonical_subcommands() {
