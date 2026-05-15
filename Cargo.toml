@@ -44,5 +44,12 @@ cargo = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 format_push_string = "allow"
 
+[profile.release]
+opt-level = 3
+strip = "none"
+lto = true
+codegen-units = 1
+panic = "abort"
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--html-in-header", "./docs-header.html"]
