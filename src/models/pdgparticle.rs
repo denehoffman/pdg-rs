@@ -368,7 +368,7 @@ impl FromSql for Parity {
 #[derive(Debug, Clone)]
 pub struct PdgParticle<'pdg> {
     pub(crate) db: &'pdg Pdg,
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub name: String,
     pub description: String,
     pub particle_type: ParticleType,
@@ -392,14 +392,14 @@ pub struct ParticleProperty<'pdg> {
 #[derive(Clone, Debug)]
 pub enum PropertySource {
     Direct,
-    Section { section_pdg_id: PdgId },
+    Section { section_pdgid: PdgId },
 }
 
 impl Display for PropertySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Direct => f.write_str("Direct"),
-            Self::Section { section_pdg_id } => write!(f, "Section {section_pdg_id}"),
+            Self::Section { section_pdgid } => write!(f, "Section {section_pdgid}"),
         }
     }
 }
@@ -409,7 +409,7 @@ impl Display for PdgParticle<'_> {
         write!(
             f,
             "{} ({}, {}, {}, charge {})",
-            self.name, self.pdg_id, self.particle_class, self.particle_type, self.charge
+            self.name, self.pdgid, self.particle_class, self.particle_type, self.charge
         )?;
 
         if let Some(mcid) = self.mcid {
@@ -445,7 +445,7 @@ impl<'pdg> PdgParticle<'pdg> {
     pub(crate) fn from_row(db: &'pdg Pdg, row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             db,
-            pdg_id: row.get(0)?,
+            pdgid: row.get(0)?,
             name: row.get(1)?,
             description: row.get(2)?,
             particle_type: row.get(3)?,
@@ -469,11 +469,11 @@ impl<'pdg> PdgParticle<'pdg> {
             }
         }
 
-        for section in self.db.children_for_pdg_id(&self.pdg_id)? {
+        for section in self.db.children_for_pdgid(&self.pdgid)? {
             if !matches!(section.data_type, DataType::Section) {
                 continue;
             }
-            for child in self.db.children_for_pdg_id(&section.pdg_id)? {
+            for child in self.db.children_for_pdgid(&section.pdgid)? {
                 if !child.data_type.is_particle_property() {
                     continue;
                 }
@@ -526,11 +526,11 @@ impl<'pdg> PdgParticle<'pdg> {
             }));
         }
 
-        for section in self.db.children_for_pdg_id(&self.pdg_id)? {
+        for section in self.db.children_for_pdgid(&self.pdgid)? {
             if !matches!(section.data_type, DataType::Section) {
                 continue;
             }
-            for child in self.db.children_for_pdg_id(&section.pdg_id)? {
+            for child in self.db.children_for_pdgid(&section.pdgid)? {
                 if child.data_type == data_type {
                     return self.section_property(&section, &child);
                 }
@@ -545,12 +545,12 @@ impl<'pdg> PdgParticle<'pdg> {
         section: &crate::PdgIdEntry,
         child: &crate::PdgIdEntry,
     ) -> PdgResult<Option<ParticleProperty<'pdg>>> {
-        let data = self.db.data_for(&child.pdg_id)?;
+        let data = self.db.data_for(&child.pdgid)?;
         Ok(data.into_iter().next().map(|value| ParticleProperty {
             data_type: child.data_type,
             value,
             source: PropertySource::Section {
-                section_pdg_id: section.pdg_id.clone(),
+                section_pdgid: section.pdgid.clone(),
             },
         }))
     }
@@ -582,7 +582,7 @@ impl<'pdg> PdgParticle<'pdg> {
             for particle in particles {
                 let [mass, lifetime, width] = particle.property_summary()?;
                 table.add_row([
-                    particle.pdg_id.clone(),
+                    particle.pdgid.clone(),
                     particle.name.clone(),
                     particle.particle_class.to_string(),
                     particle.particle_type.to_string(),
@@ -601,7 +601,7 @@ impl<'pdg> PdgParticle<'pdg> {
             for particle in particles {
                 table.add_row([
                     particle.name.clone(),
-                    particle.pdg_id.clone(),
+                    particle.pdgid.clone(),
                     particle.particle_class.to_string(),
                     particle.particle_type.to_string(),
                     particle
@@ -631,11 +631,11 @@ impl<'pdg> PdgParticle<'pdg> {
     }
 
     pub fn texts(&self) -> PdgResult<Vec<PdgText>> {
-        self.db.texts_for(&self.pdg_id)
+        self.db.texts_for(&self.pdgid)
     }
 
     pub fn footnotes(&self) -> PdgResult<Vec<PdgFootnote>> {
-        self.db.footnotes_for(&self.pdg_id)
+        self.db.footnotes_for(&self.pdgid)
     }
 
     pub fn item(&self) -> PdgResult<Option<PdgItem<'pdg>>> {
@@ -822,7 +822,7 @@ impl<'pdg> PdgParticle<'pdg> {
             .decay_data(DataType::BranchingRatio, LATEST_EDITION)?
             .into_iter()
             .map(|data| BranchingRatio {
-                pdg_id: data.pdg_id,
+                pdgid: data.pdgid,
                 description: data.description,
                 mode_number: data.mode_number,
                 value: data.data,
@@ -866,10 +866,9 @@ impl<'pdg> PdgParticle<'pdg> {
         );
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
-            .query_map(
-                [data_type.to_code(), &self.pdg_id, &edition.into()],
-                |row| DataEntry::from_row(self.db, row),
-            )?
+            .query_map([data_type.to_code(), &self.pdgid, &edition.into()], |row| {
+                DataEntry::from_row(self.db, row)
+            })?
             .collect::<Result<Vec<_>, _>>()?)
     }
     pub fn query(
@@ -883,10 +882,9 @@ impl<'pdg> PdgParticle<'pdg> {
         );
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
-            .query_row(
-                [data_type.to_code(), &self.pdg_id, &edition.into()],
-                |row| DataEntry::from_row(self.db, row),
-            )
+            .query_row([data_type.to_code(), &self.pdgid, &edition.into()], |row| {
+                DataEntry::from_row(self.db, row)
+            })
             .optional()?)
     }
 
@@ -901,7 +899,7 @@ impl<'pdg> PdgParticle<'pdg> {
                     .into_iter()
                     .map(|data| BranchingFractionWithSort {
                         data: BranchingFraction {
-                            pdg_id: data.pdg_id,
+                            pdgid: data.pdgid,
                             description: data.description,
                             mode_number: data.mode_number,
                             value: data.data,
@@ -930,7 +928,7 @@ impl<'pdg> PdgParticle<'pdg> {
         );
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
-            .query_map([data_type, &self.pdg_id, &edition], |row| {
+            .query_map([data_type, &self.pdgid, &edition], |row| {
                 DecayData::from_row(self.db, row)
             })?
             .collect::<Result<Vec<_>, _>>()?)
@@ -944,19 +942,19 @@ impl<'pdg> PdgParticle<'pdg> {
             return Ok(());
         }
 
-        let pdg_ids = branching_fractions
+        let pdgids = branching_fractions
             .iter()
-            .map(|branching_fraction| branching_fraction.data.pdg_id.as_str())
+            .map(|branching_fraction| branching_fraction.data.pdgid.as_str())
             .collect::<Vec<_>>();
-        let placeholders = std::iter::repeat_n("?", pdg_ids.len())
+        let placeholders = std::iter::repeat_n("?", pdgids.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
             "SELECT pdgid, name, is_outgoing, multiplier FROM pdgdecay WHERE pdgid IN ({placeholders}) ORDER BY pdgid ASC, sort ASC"
         );
         let mut stmt = self.db.db().prepare(&sql)?;
-        let mut products_by_pdg_id: HashMap<PdgId, Vec<DecayProduct<'pdg>>> = HashMap::new();
-        let rows = stmt.query_map(params_from_iter(pdg_ids), |row| {
+        let mut products_by_pdgid: HashMap<PdgId, Vec<DecayProduct<'pdg>>> = HashMap::new();
+        let rows = stmt.query_map(params_from_iter(pdgids), |row| {
             Ok((
                 row.get::<_, PdgId>(0)?,
                 DecayProduct {
@@ -969,13 +967,13 @@ impl<'pdg> PdgParticle<'pdg> {
         })?;
 
         for row in rows {
-            let (pdg_id, product) = row?;
-            products_by_pdg_id.entry(pdg_id).or_default().push(product);
+            let (pdgid, product) = row?;
+            products_by_pdgid.entry(pdgid).or_default().push(product);
         }
 
         for branching_fraction in branching_fractions {
-            branching_fraction.data.products = products_by_pdg_id
-                .remove(&branching_fraction.data.pdg_id)
+            branching_fraction.data.products = products_by_pdgid
+                .remove(&branching_fraction.data.pdgid)
                 .unwrap_or_default();
         }
         Ok(())
@@ -989,11 +987,11 @@ impl<'pdg> PdgParticle<'pdg> {
             return Ok(());
         }
 
-        let pdg_ids = branching_fractions
+        let pdgids = branching_fractions
             .iter()
-            .map(|branching_fraction| branching_fraction.data.pdg_id.as_str())
+            .map(|branching_fraction| branching_fraction.data.pdgid.as_str())
             .collect::<Vec<_>>();
-        let placeholders = std::iter::repeat_n("?", pdg_ids.len())
+        let placeholders = std::iter::repeat_n("?", pdgids.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
@@ -1001,10 +999,10 @@ impl<'pdg> PdgParticle<'pdg> {
             DataEntry::COLUMNS
         );
 
-        let mut params = pdg_ids;
+        let mut params = pdgids;
         params.push(LATEST_EDITION);
         let mut stmt = self.db.db().prepare(&sql)?;
-        let mut related_by_pdg_id: HashMap<PdgId, Vec<RelatedDataEntry<'pdg>>> = HashMap::new();
+        let mut related_by_pdgid: HashMap<PdgId, Vec<RelatedDataEntry<'pdg>>> = HashMap::new();
         let rows = stmt.query_map(params_from_iter(params), |row| {
             Ok((
                 row.get::<_, PdgId>(DataEntry::COLUMN_COUNT + 3)?,
@@ -1013,18 +1011,18 @@ impl<'pdg> PdgParticle<'pdg> {
         })?;
 
         for row in rows {
-            let (pdg_id, related_data) = row?;
+            let (pdgid, related_data) = row?;
             if let Ok(related_data) = related_data {
-                related_by_pdg_id
-                    .entry(pdg_id)
+                related_by_pdgid
+                    .entry(pdgid)
                     .or_default()
                     .push(related_data);
             }
         }
 
         for branching_fraction in branching_fractions {
-            branching_fraction.data.related_data = related_by_pdg_id
-                .remove(&branching_fraction.data.pdg_id)
+            branching_fraction.data.related_data = related_by_pdgid
+                .remove(&branching_fraction.data.pdgid)
                 .unwrap_or_default();
         }
         Ok(())
@@ -1033,7 +1031,7 @@ impl<'pdg> PdgParticle<'pdg> {
 
 #[derive(Debug)]
 struct DecayData<'pdg> {
-    pdg_id: PdgId,
+    pdgid: PdgId,
     description: String,
     mode_number: Option<usize>,
     data: DataEntry<'pdg>,
@@ -1044,7 +1042,7 @@ impl<'pdg> DecayData<'pdg> {
     fn from_row(db: &'pdg Pdg, row: &Row<'_>) -> rusqlite::Result<Self> {
         let data = DataEntry::from_row(db, row)?;
         Ok(Self {
-            pdg_id: data.pdgid.clone(),
+            pdgid: data.pdgid.clone(),
             description: row.get(DataEntry::COLUMN_COUNT)?,
             mode_number: row
                 .get::<_, Option<isize>>(DataEntry::COLUMN_COUNT + 1)?
@@ -1104,7 +1102,7 @@ impl<'pdg> DecayProduct<'pdg> {
 
 #[derive(Debug, Clone)]
 pub struct BranchingFraction<'pdg> {
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub description: String,
     pub mode_number: Option<usize>,
     pub value: DataEntry<'pdg>,
@@ -1129,7 +1127,7 @@ impl<'pdg> BranchingFraction<'pdg> {
 
 #[derive(Debug, Clone)]
 pub struct RelatedDataEntry<'pdg> {
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub description: String,
     pub data_type: DataType,
     pub mode_number: Option<usize>,
@@ -1140,7 +1138,7 @@ impl<'pdg> RelatedDataEntry<'pdg> {
     fn from_row(db: &'pdg Pdg, row: &Row<'_>) -> rusqlite::Result<Self> {
         let data = DataEntry::from_row(db, row)?;
         Ok(Self {
-            pdg_id: data.pdgid.clone(),
+            pdgid: data.pdgid.clone(),
             description: row.get(DataEntry::COLUMN_COUNT)?,
             mode_number: row
                 .get::<_, Option<isize>>(DataEntry::COLUMN_COUNT + 1)?
@@ -1165,7 +1163,7 @@ impl<'pdg> RelatedDataEntry<'pdg> {
 
 #[derive(Debug, Clone)]
 pub struct BranchingRatio<'pdg> {
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub description: String,
     pub mode_number: Option<usize>,
     pub value: DataEntry<'pdg>,
@@ -1739,7 +1737,7 @@ mod tests {
         let texts = db.texts_for("S008M").unwrap();
 
         assert_eq!(texts.len(), 1);
-        assert_eq!(texts[0].pdg_id, "S008M");
+        assert_eq!(texts[0].pdgid, "S008M");
         assert_eq!(texts[0].text_type, "h");
         assert_eq!(texts[0].sort, 1);
         assert!(
@@ -1757,7 +1755,7 @@ mod tests {
         let footnotes = db.footnotes_for("S008M").unwrap();
 
         assert!(footnotes.len() >= 10);
-        assert_eq!(footnotes[0].pdg_id.as_deref(), Some("S008M"));
+        assert_eq!(footnotes[0].pdgid.as_deref(), Some("S008M"));
         assert_eq!(footnotes[0].index, Some(1));
         assert!(footnotes[0].text.as_ref().unwrap().contains("DAUM 2019"));
     }
@@ -1779,7 +1777,7 @@ mod tests {
         let first_value = first.values.first().unwrap();
         let first_footnote = first.footnotes.first().unwrap();
 
-        assert_eq!(first.pdg_id, "S008M");
+        assert_eq!(first.pdgid, "S008M");
         assert_eq!(first.reference.document_id.trim(), "DAUM 2019");
         assert_eq!(first.reference.publication_year, Some(2019));
         assert_eq!(
@@ -1802,7 +1800,7 @@ mod tests {
         assert_eq!(first_value.unit_text.as_deref(), Some("MeV"));
         assert!(first_value.used_in_average);
         assert!(first_value.used_in_fit);
-        assert_eq!(first_footnote.pdg_id.as_deref(), Some("S008M"));
+        assert_eq!(first_footnote.pdgid.as_deref(), Some("S008M"));
         assert_eq!(first_footnote.index, Some(1));
         assert!(first_footnote.text.as_ref().unwrap().contains("DAUM 2019"));
         assert!(!first_footnote.changebar);
@@ -1868,7 +1866,7 @@ mod tests {
         assert_eq!(width.to_string(), "50 to 100 MeV");
         assert!(matches!(
             mass_property.source,
-            PropertySource::Section { ref section_pdg_id } if section_pdg_id == "M036205"
+            PropertySource::Section { ref section_pdgid } if section_pdgid == "M036205"
         ));
     }
 
@@ -1880,7 +1878,7 @@ mod tests {
         let branching_fractions = pion.exclusive_branching_fractions().unwrap();
         let muon_mode = branching_fractions
             .iter()
-            .find(|branching_fraction| branching_fraction.pdg_id == "S008.1")
+            .find(|branching_fraction| branching_fraction.pdgid == "S008.1")
             .unwrap();
 
         assert_eq!(muon_mode.description, "pi+ --> mu+ nu_mu");
@@ -1904,15 +1902,15 @@ mod tests {
         );
         assert_eq!(
             muon_mode.measurements().unwrap().len(),
-            db.measurements_for(muon_mode.pdg_id.clone()).unwrap().len()
+            db.measurements_for(muon_mode.pdgid.clone()).unwrap().len()
         );
         assert_eq!(
             muon_mode.footnotes().unwrap().len(),
-            db.footnotes_for(muon_mode.pdg_id.clone()).unwrap().len()
+            db.footnotes_for(muon_mode.pdgid.clone()).unwrap().len()
         );
         assert_eq!(
             muon_mode.texts().unwrap().len(),
-            db.texts_for(muon_mode.pdg_id.clone()).unwrap().len()
+            db.texts_for(muon_mode.pdgid.clone()).unwrap().len()
         );
     }
 
@@ -1924,12 +1922,12 @@ mod tests {
         let branching_fractions = pion.exclusive_branching_fractions().unwrap();
         let muon_mode = branching_fractions
             .iter()
-            .find(|branching_fraction| branching_fraction.pdg_id == "S008.1")
+            .find(|branching_fraction| branching_fraction.pdgid == "S008.1")
             .unwrap();
         let related_ratio = muon_mode
             .related_data
             .iter()
-            .find(|related_data| related_data.pdg_id == "S008R10")
+            .find(|related_data| related_data.pdgid == "S008R10")
             .unwrap();
 
         assert_eq!(related_ratio.data_type, DataType::BranchingRatio);
@@ -1939,7 +1937,7 @@ mod tests {
 
         assert_eq!(
             related_ratio.measurements().unwrap().len(),
-            db.measurements_for(related_ratio.pdg_id.clone())
+            db.measurements_for(related_ratio.pdgid.clone())
                 .unwrap()
                 .len()
         );
@@ -1955,14 +1953,14 @@ mod tests {
         let branching_fractions = kaon.exclusive_branching_fractions().unwrap();
         let muon_mode = branching_fractions
             .iter()
-            .find(|branching_fraction| branching_fraction.pdg_id == "S010.1")
+            .find(|branching_fraction| branching_fraction.pdgid == "S010.1")
             .unwrap();
 
         assert!(
             muon_mode
                 .related_data
                 .iter()
-                .any(|related_data| related_data.pdg_id == "S010T"
+                .any(|related_data| related_data.pdgid == "S010T"
                     && related_data.data_type == DataType::Lifetime
                     && related_data.description == "K+- MEAN LIFE"
                     && related_data.value.value.unwrap() > 0.0)
@@ -1978,17 +1976,11 @@ mod tests {
         let exclusive = b0.exclusive_branching_fractions().unwrap();
         let all = b0.branching_fractions().unwrap();
 
-        assert!(inclusive.iter().any(|mode| mode.pdg_id == "S042.94"));
-        assert!(exclusive.iter().any(|mode| mode.pdg_id == "S042.30"));
+        assert!(inclusive.iter().any(|mode| mode.pdgid == "S042.94"));
+        assert!(exclusive.iter().any(|mode| mode.pdgid == "S042.30"));
         assert_eq!(all.len(), inclusive.len() + exclusive.len());
-        let inclusive_position = all
-            .iter()
-            .position(|mode| mode.pdg_id == "S042.94")
-            .unwrap();
-        let exclusive_position = all
-            .iter()
-            .position(|mode| mode.pdg_id == "S042.30")
-            .unwrap();
+        let inclusive_position = all.iter().position(|mode| mode.pdgid == "S042.94").unwrap();
+        let exclusive_position = all.iter().position(|mode| mode.pdgid == "S042.30").unwrap();
 
         assert!(inclusive_position < exclusive_position);
     }
@@ -2001,14 +1993,14 @@ mod tests {
         let branching_ratios = pion.branching_ratios().unwrap();
         let ratio = branching_ratios
             .iter()
-            .find(|ratio| ratio.pdg_id == "S008R2")
+            .find(|ratio| ratio.pdgid == "S008R2")
             .unwrap();
 
         assert_eq!(ratio.description, "G(pi+ --> e+ nu_e)/G(total)");
         assert!(ratio.value.value.unwrap() > 0.0);
         assert_eq!(
             ratio.measurements().unwrap().len(),
-            db.measurements_for(ratio.pdg_id.clone()).unwrap().len()
+            db.measurements_for(ratio.pdgid.clone()).unwrap().len()
         );
         assert!(!ratio.texts().unwrap().is_empty());
     }
@@ -2024,7 +2016,7 @@ mod tests {
         let branching_ratios = sigma.branching_ratios().unwrap();
         let ratio = branching_ratios
             .iter()
-            .find(|ratio| ratio.pdg_id == "B002R1")
+            .find(|ratio| ratio.pdgid == "B002R1")
             .unwrap();
 
         assert_eq!(ratio.value.error_positive, Some(0.03));
@@ -2097,7 +2089,7 @@ mod tests {
             pion.exclusive_branching_fractions()
                 .unwrap()
                 .into_iter()
-                .find(|mode| mode.pdg_id == "S008.1")
+                .find(|mode| mode.pdgid == "S008.1")
                 .unwrap()
                 .value
                 .to_string(),
@@ -2118,7 +2110,7 @@ mod tests {
         let branching_fractions = pion.exclusive_branching_fractions().unwrap();
         let limit_mode = branching_fractions
             .iter()
-            .find(|branching_fraction| branching_fraction.pdg_id == "S008.10")
+            .find(|branching_fraction| branching_fraction.pdgid == "S008.10")
             .unwrap();
 
         assert_eq!(limit_mode.value.limit_type, Some(LimitType::UpperLimit));

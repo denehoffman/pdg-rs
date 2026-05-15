@@ -255,7 +255,7 @@ else {
     return Ok(());
 };
 println!("{}\n", result.text);
-let measurements = pdg.measurements_for(result.pdg_id)?;
+let measurements = pdg.measurements_for(result.pdgid)?;
 for measurement in &measurements {
     println!(
         "{:<25} ({})",
@@ -393,7 +393,7 @@ HOYLE 2001                 10.1103/PhysRevLett.86.1418
 HOSKINS 1985               10.1103/PhysRevD.32.3084
 ```
 
-Data is not always in a consistent form, although that is mostly due to the difficulty of having to account for so many different kinds of data entries. The search feature is intended to be more of a backend to a future TUI which will allow for these sorts of resources to be discovered in a more interactive manner rather than poking around at each `pdg_id` entry to see what references/footnotes/values it may relate to.
+Data is not always in a consistent form, although that is mostly due to the difficulty of having to account for so many different kinds of data entries. The search feature is intended to be more of a backend to a future TUI which will allow for these sorts of resources to be discovered in a more interactive manner rather than poking around at each `pdgid` entry to see what references/footnotes/values it may relate to.
 
 ## Project Status
 Currently this is just a working example. I have some plans to expand the interface, but I'm open to outside contributions and ideas, please raise issues or make pull requests if interested. Some things I'm currently considering/working on:

@@ -5,8 +5,8 @@ use crate::{DataType, PdgId};
 #[derive(Clone, Debug)]
 pub struct PdgIdEntry {
     pub id: isize,
-    pub pdg_id: PdgId,
-    pub parent_pdg_id: Option<PdgId>,
+    pub pdgid: PdgId,
+    pub parent_pdgid: Option<PdgId>,
     pub description: String,
     pub mode_number: Option<isize>,
     pub data_type: DataType,
@@ -21,8 +21,8 @@ impl TryFrom<&Row<'_>> for PdgIdEntry {
     fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
             id: row.get(0)?,
-            pdg_id: row.get(1)?,
-            parent_pdg_id: row.get(2)?,
+            pdgid: row.get(1)?,
+            parent_pdgid: row.get(2)?,
             description: row.get(3)?,
             mode_number: row.get(4)?,
             data_type: row.get(5)?,
@@ -42,7 +42,7 @@ pub enum TextSearchSource {
 
 #[derive(Clone, Debug)]
 pub struct TextSearchResult {
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub source: TextSearchSource,
     pub text: String,
     pub snippet: String,
@@ -52,7 +52,7 @@ pub struct TextSearchResult {
 
 #[derive(Clone, Debug)]
 pub struct PdgText {
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub text_type: String,
     pub text: Option<String>,
     pub sort: isize,
@@ -63,7 +63,7 @@ impl TryFrom<&Row<'_>> for PdgText {
 
     fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
-            pdg_id: row.get(0)?,
+            pdgid: row.get(0)?,
             text_type: row.get(1)?,
             text: row.get(2)?,
             sort: row.get(3)?,
@@ -73,7 +73,7 @@ impl TryFrom<&Row<'_>> for PdgText {
 
 #[derive(Clone, Debug)]
 pub struct PdgFootnote {
-    pub pdg_id: Option<PdgId>,
+    pub pdgid: Option<PdgId>,
     pub index: Option<isize>,
     pub text: Option<String>,
     pub changebar: bool,
@@ -84,7 +84,7 @@ impl TryFrom<&Row<'_>> for PdgFootnote {
 
     fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
-            pdg_id: row.get(0)?,
+            pdgid: row.get(0)?,
             index: row.get(1)?,
             text: row.get(2)?,
             changebar: row.get(3)?,

@@ -264,7 +264,7 @@ fn show_json_is_valid() {
         .stdout
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(value["entry"]["pdg_id"], "S008");
+    assert_eq!(value["entry"]["pdgid"], "S008");
     assert_eq!(value["particle"]["mcid"], 211);
 }
 
@@ -312,7 +312,7 @@ fn search_particles_json_is_valid() {
         .stdout
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(value[0]["pdg_id"], "S008");
+    assert_eq!(value[0]["pdgid"], "S008");
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn search_text_json_includes_footnote_source() {
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value[0]["source"], "footnote");
-    assert_eq!(value[0]["pdg_id"], "S042P86");
+    assert_eq!(value[0]["pdgid"], "S042P86");
 }
 
 #[test]

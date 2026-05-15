@@ -88,11 +88,11 @@ impl Pdg {
             .optional()?)
     }
 
-    pub fn particle_by_pdg_id(
+    pub fn particle_by_pdgid(
         &self,
-        pdg_id: impl Into<String>,
+        pdgid: impl Into<String>,
     ) -> PdgResult<Option<PdgParticle<'_>>> {
-        let pdg_id = pdg_id.into();
+        let pdgid = pdgid.into();
         let sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE upper(pdgparticle.pdgid) = upper(?1)",
             Self::PARTICLE_COLUMNS,
@@ -100,19 +100,19 @@ impl Pdg {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_row([&pdg_id], |row| PdgParticle::from_row(self, row))
+            .query_row([&pdgid], |row| PdgParticle::from_row(self, row))
             .optional()?)
     }
 
-    pub fn pdg_id(&self, pdg_id: impl Into<String>) -> PdgResult<Option<PdgIdEntry>> {
-        let pdg_id = pdg_id.into();
+    pub fn pdgid(&self, pdgid: impl Into<String>) -> PdgResult<Option<PdgIdEntry>> {
+        let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
             "SELECT id, pdgid, parent_pdgid, description, mode_number, data_type, flags, year_added, sort
             FROM pdgid
             WHERE upper(pdgid) = upper(?1)",
         )?;
         Ok(stmt
-            .query_row([&pdg_id], |row| PdgIdEntry::try_from(row))
+            .query_row([&pdgid], |row| PdgIdEntry::try_from(row))
             .optional()?)
     }
 
@@ -136,7 +136,7 @@ impl Pdg {
         )?;
         Ok(stmt
             .query_map([&query], |row| {
-                let pdg_id = row.get::<_, PdgId>(0)?;
+                let pdgid = row.get::<_, PdgId>(0)?;
                 let source = row.get::<_, String>(1)?;
                 let text_type = row.get::<_, Option<String>>(2)?;
                 let sort = row.get::<_, Option<isize>>(3)?;
@@ -153,7 +153,7 @@ impl Pdg {
                                 sort,
                             },
                             Some(PdgText {
-                                pdg_id: pdg_id.clone(),
+                                pdgid: pdgid.clone(),
                                 text_type,
                                 text: Some(text.clone()),
                                 sort,
@@ -169,7 +169,7 @@ impl Pdg {
                     _ => (TextSearchSource::Description, None),
                 };
                 Ok(TextSearchResult {
-                    pdg_id,
+                    pdgid,
                     source,
                     text,
                     snippet,
@@ -275,17 +275,17 @@ impl Pdg {
         for particle in particles {
             if !matches_data_range(
                 mass_entries.as_ref(),
-                &particle.pdg_id,
+                &particle.pdgid,
                 mass_range,
                 Unit::Mev,
             ) || !matches_data_range(
                 width_entries.as_ref(),
-                &particle.pdg_id,
+                &particle.pdgid,
                 width_range,
                 Unit::Mev,
             ) || !matches_data_range(
                 lifetime_entries.as_ref(),
-                &particle.pdg_id,
+                &particle.pdgid,
                 lifetime_range,
                 Unit::Seconds,
             ) {
@@ -295,7 +295,7 @@ impl Pdg {
             if decays_to.mode == DecayMatchMode::Exact
                 && !decays_to.states.is_empty()
                 && !self.particle_matches_exact_decay(
-                    &particle.pdg_id,
+                    &particle.pdgid,
                     &decays_to.states,
                     decay_state_expansion,
                 )?
@@ -357,8 +357,8 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn children_for_pdg_id(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgIdEntry>> {
-        let pdg_id = pdg_id.into();
+    pub fn children_for_pdgid(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgIdEntry>> {
+        let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
             "SELECT id, pdgid, parent_pdgid, description, mode_number, data_type, flags, year_added, sort
             FROM pdgid
@@ -366,15 +366,12 @@ impl Pdg {
             ORDER BY sort, pdgid",
         )?;
         Ok(stmt
-            .query_map([&pdg_id], |row| PdgIdEntry::try_from(row))?
+            .query_map([&pdgid], |row| PdgIdEntry::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn mapped_entries_for_pdg_id(
-        &self,
-        pdg_id: impl Into<String>,
-    ) -> PdgResult<Vec<PdgIdEntry>> {
-        let pdg_id = pdg_id.into();
+    pub fn mapped_entries_for_pdgid(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgIdEntry>> {
+        let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
             "SELECT target.id, target.pdgid, target.parent_pdgid, target.description, target.mode_number, target.data_type, target.flags, target.year_added, target.sort
             FROM pdgid_map
@@ -383,51 +380,51 @@ impl Pdg {
             ORDER BY pdgid_map.sort, target.pdgid",
         )?;
         Ok(stmt
-            .query_map([&pdg_id], |row| PdgIdEntry::try_from(row))?
+            .query_map([&pdgid], |row| PdgIdEntry::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn data_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<DataEntry<'_>>> {
-        let pdg_id = pdg_id.into();
+    pub fn data_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<DataEntry<'_>>> {
+        let pdgid = pdgid.into();
         let sql = format!(
             "SELECT {} FROM pdgdata WHERE upper(pdgid) = upper(?1) AND edition = ?2 ORDER BY sort",
             DataEntry::COLUMNS
         );
         let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_map([&pdg_id, LATEST_EDITION], |row| {
+            .query_map([&pdgid, LATEST_EDITION], |row| {
                 DataEntry::from_row(self, row)
             })?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn texts_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgText>> {
-        let pdg_id = pdg_id.into();
+    pub fn texts_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgText>> {
+        let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
             "SELECT pdgid, type, text, sort FROM pdgtext WHERE pdgid = ?1 ORDER BY sort",
         )?;
         Ok(stmt
-            .query_map([&pdg_id], |row| PdgText::try_from(row))?
+            .query_map([&pdgid], |row| PdgText::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn footnotes_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgFootnote>> {
-        let pdg_id = pdg_id.into();
+    pub fn footnotes_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgFootnote>> {
+        let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
             "SELECT pdgid, footnote_index, text, changebar FROM pdgfootnote WHERE pdgid = ?1 ORDER BY footnote_index",
         )?;
         Ok(stmt
-            .query_map([&pdg_id], |row| PdgFootnote::try_from(row))?
+            .query_map([&pdgid], |row| PdgFootnote::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn measurements_for(&self, pdg_id: impl Into<String>) -> PdgResult<Vec<PdgMeasurement>> {
-        let pdg_id = pdg_id.into();
+    pub fn measurements_for(&self, pdgid: impl Into<String>) -> PdgResult<Vec<PdgMeasurement>> {
+        let pdgid = pdgid.into();
         let mut stmt = self.conn.prepare(
             "SELECT pdgmeasurement.id, pdgmeasurement.pdgid, event_count, confidence_level, place, technique, charge, changebar, comment, sort, document_id, publication_name, publication_year, doi, inspire_id, title FROM pdgmeasurement JOIN pdgreference ON pdgreference.id = pdgmeasurement.pdgreference_id WHERE pdgmeasurement.pdgid = ?1 ORDER BY sort",
         )?;
         let mut measurements = stmt
-            .query_map([&pdg_id], |row| PdgMeasurement::try_from(row))?
+            .query_map([&pdgid], |row| PdgMeasurement::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut value_stmt = self.conn.prepare(
@@ -509,7 +506,7 @@ impl Pdg {
 
     fn particle_matches_exact_decay(
         &self,
-        pdg_id: &str,
+        pdgid: &str,
         states: &[String],
         expansion: DecayStateExpansion,
     ) -> PdgResult<bool> {
@@ -527,7 +524,7 @@ impl Pdg {
             ORDER BY decay_pdgid.sort ASC, pdgdecay.sort ASC",
         )?;
         let rows = stmt
-            .query_map([pdg_id], |row| {
+            .query_map([pdgid], |row| {
                 Ok((
                     row.get::<_, PdgId>(0)?,
                     row.get::<_, String>(1)?,
@@ -537,8 +534,8 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut modes = std::collections::HashMap::<PdgId, Vec<String>>::new();
-        for (mode_pdg_id, name, multiplier) in rows {
-            let products = modes.entry(mode_pdg_id).or_default();
+        for (mode_pdgid, name, multiplier) in rows {
+            let products = modes.entry(mode_pdgid).or_default();
             for _ in 0..multiplier {
                 products.push(name.clone());
             }
@@ -708,13 +705,13 @@ fn group_property_entries<'pdg>(
 
     grouped
         .into_iter()
-        .map(|(pdg_id, (all_entries, summary_entries))| {
+        .map(|(pdgid, (all_entries, summary_entries))| {
             let entries = if summary_entries.is_empty() {
                 all_entries
             } else {
                 summary_entries
             };
-            (pdg_id, entries)
+            (pdgid, entries)
         })
         .collect()
 }
@@ -739,14 +736,14 @@ impl Interval {
 
 fn matches_data_range(
     entries_by_parent: Option<&std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>>,
-    pdg_id: &str,
+    pdgid: &str,
     range: Option<(f64, f64)>,
     unit: Unit,
 ) -> bool {
     let Some((min, max)) = range else {
         return true;
     };
-    let Some(entries) = entries_by_parent.and_then(|entries| entries.get(pdg_id)) else {
+    let Some(entries) = entries_by_parent.and_then(|entries| entries.get(pdgid)) else {
         return true;
     };
     if entries.is_empty() {
@@ -958,7 +955,7 @@ mod tests {
         let result = results
             .iter()
             .find(|result| {
-                result.pdg_id == "S012205" && result.source == TextSearchSource::Description
+                result.pdgid == "S012205" && result.source == TextSearchSource::Description
             })
             .unwrap();
 
@@ -997,7 +994,7 @@ mod tests {
             .find(|result| matches!(result.source, TextSearchSource::Footnote { .. }))
             .unwrap();
 
-        assert_eq!(result.pdg_id, "S042P86");
+        assert_eq!(result.pdgid, "S042P86");
         assert!(result.text.contains("normalisation decay"));
         assert!(!result.snippet.is_empty());
         assert!(result.pdg_text.is_none());

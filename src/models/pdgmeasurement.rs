@@ -16,7 +16,7 @@ pub struct PdgReference {
 
 #[derive(Clone, Debug)]
 pub struct PdgMeasurement {
-    pub pdg_id: PdgId,
+    pub pdgid: PdgId,
     pub reference: PdgReference,
     pub event_count: Option<String>,
     pub confidence_level: Option<f64>,
@@ -37,7 +37,7 @@ impl TryFrom<&Row<'_>> for PdgMeasurement {
     fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
             id: row.get(0)?,
-            pdg_id: row.get(1)?,
+            pdgid: row.get(1)?,
             event_count: row.get(2)?,
             confidence_level: row.get(3)?,
             place: row.get(4)?,
