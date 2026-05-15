@@ -12,8 +12,6 @@ cargo add pdg-rs
 ```bash
 cargo install pdg-rs
 ```
-> [!NOTE]
-> This crate has not yet been published, so these commands will not actually function yet.
 
 ## Usage
 
@@ -49,25 +47,34 @@ fn main() -> PdgResult<()> {
 Most queries return `Option`s because we can't guarantee the search term will yield results (for instance, the "p-" doesn't exist, so asking for it should return `None`). The `PdgError` type is mostly reserved for errors encountered while parsing data from the sqlite database. Particle information is either directly available (charge, quantum numbers) or queryable (mass, lifetime). Most of these methods will produce unique data types (like a `Mass` struct) which contain additional information:
 
 ```rust
-let mass_texts = pdg.texts_for(&m_pi_plus.pdgid)?;
-for text in mass_texts {
-    if let Some(text) = text.text {
-        println!("{}", text);
+use pdg_rs::{Pdg, PdgResult};
+
+fn main() -> PdgResult<()> {
+    let pdg = Pdg::open()?;
+    let pi_plus = pdg.particle("pi+")?.unwrap();
+    let m_pi_plus = pi_plus.mass()?.unwrap();
+
+    let mass_texts = pdg.texts_for(&m_pi_plus.pdgid)?;
+    for text in mass_texts {
+        if let Some(text) = text.text {
+            println!("{}", text);
+        }
     }
-}
-let mass_measurements = pdg.measurements_for(&m_pi_plus.pdgid)?;
-for measurement in mass_measurements {
-    println!(
-        "{:<20} {:<50}: {}",
-        measurement.reference.document_id,
-        measurement.reference.doi.unwrap_or_default(),
-        measurement
-            .values
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let mass_measurements = pdg.measurements_for(&m_pi_plus.pdgid)?;
+    for measurement in mass_measurements {
+        println!(
+            "{:<20} {:<50}: {}",
+            measurement.reference.document_id,
+            measurement.reference.doi.unwrap_or_default(),
+            measurement
+                .values
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
 }
 ```
 This will output:
@@ -91,9 +98,17 @@ We are sometimes limited by the type schema defined by the PDG, but this is just
 ### Decays
 Branching ratios/fractions are also available in the database, and `pdg-rs` provides an interface for exploring them:
 ```rust
-let decays = pi_plus.branching_fractions()?;
-for decay in decays {
-    println!("{:<20} {}", decay.value.to_string(), decay.description)
+use pdg_rs::{Pdg, PdgResult};
+
+fn main() -> PdgResult<()> {
+    let pdg = Pdg::open()?;
+    let pi_plus = pdg.particle("pi+")?.unwrap();
+
+    let decays = pi_plus.branching_fractions()?;
+    for decay in decays {
+        println!("{:<20} {}", decay.value.to_string(), decay.description)
+    }
+    Ok(())
 }
 ```
 ```text
@@ -109,25 +124,33 @@ for decay in decays {
 ```
 Of course, we might like to see how these measurements were obtained. Sometimes we may be able to find a raw branching fraction measurement, but more often these are associated to measurements of branching ratios. We can query branching ratios, but we can also find related data entries):
 ```rust
-let decays = pi_plus.branching_fractions()?;
-for decay in decays {
-    println!("{:<20} {}", decay.value.to_string(), decay.description);
-    for data in &decay.related_data {
-        println!("    {:<20} {}", data.value.to_string(), data.description);
-        for measurement in data.measurements()? {
-            println!(
-                "        {:<25}  {}",
-                measurement.reference.document_id,
-                measurement
-                    .reference
-                    .doi
-                    .clone()
-                    .or(measurement.reference.inspire_id.clone())
-                    .or(measurement.reference.title.clone())
-                    .unwrap_or_default()
-            );
+use pdg_rs::{Pdg, PdgResult};
+
+fn main() -> PdgResult<()> {
+    let pdg = Pdg::open()?;
+    let pi_plus = pdg.particle("pi+")?.unwrap();
+
+    let decays = pi_plus.branching_fractions()?;
+    for decay in decays {
+        println!("{:<20} {}", decay.value.to_string(), decay.description);
+        for data in &decay.related_data {
+            println!("    {:<20} {}", data.value.to_string(), data.description);
+            for measurement in data.measurements()? {
+                println!(
+                    "        {:<25}  {}",
+                    measurement.reference.document_id,
+                    measurement
+                        .reference
+                        .doi
+                        .clone()
+                        .or(measurement.reference.inspire_id.clone())
+                        .or(measurement.reference.title.clone())
+                        .unwrap_or_default()
+                );
+            }
         }
     }
+    Ok(())
 }
 ```
 ```text
@@ -191,7 +214,7 @@ for decay in decays {
 ```
 
 ### Particle searches
-It is often useful to search for all particles which satisfy some set of properties. This is currently sort of difficult to do with just the PDG website or other programmatic interfaces, but generally enough information exists in the database itself to allow for complex searches. For example, let's search for all particles which may decay to $K_S^0K_S^0$. By default, searches are inclusive, so $K_S^0$ will be mapped to other entries like $K^0$ and $\bar{K}^0$, which is useful since these are often the states listed in the database. Of course, not everything that can decay to $K\bar{K}$ can also decay to $K_S^0K_S^0$, and the PDG sometimes includes forbidden decays simply because there are published results, so it's often nice to narrow the search with additional information, such as $P$, $C$, and charge:
+It is often useful to search for all particles which satisfy some set of properties. This is currently sort of difficult to do with just the PDG website or other programmatic interfaces, but generally enough information exists in the database itself to allow for complex searches. For example, let's search for all particles which may decay to $`K_S^0K_S^0`$. By default, searches are inclusive, so $`K_S^0`$ will be mapped to other entries like $`K^0`$ and $`\bar{K}^0`$, which is useful since these are often the states listed in the database. Of course, not everything that can decay to $`K\bar{K}`$ can also decay to $`K_S^0K_S^0`$, and the PDG sometimes includes forbidden decays simply because there are published results, so it's often nice to narrow the search with additional information, such as $`P`$, $`C`$, and charge:
 ```rust
 use pdg_rs::{Charge, Parity, ParticleSearchQuery, Pdg, PdgResult};
 
@@ -247,44 +270,51 @@ There are lots of interesting ways to filter particle searches, such as selectin
 
 The database itself contains data beyond individual particle and decay measurements. A lot of this data is hard to classify, so it's often useful to use search queries. For example, if we wanted to learn about constraints on extra dimensions, we might do the following:
 ```rust
-let Some(result) = pdg
-    .search_text("extra dimensions Newtonian")?
-    .into_iter()
-    .find(|result| result.text.starts_with("This section includes"))
-else {
-    return Ok(());
-};
-println!("{}\n", result.text);
-let measurements = pdg.measurements_for(result.pdgid)?;
-for measurement in &measurements {
-    println!(
-        "{:<25} ({})",
-        measurement.reference.document_id,
-        measurement.comment.clone().unwrap_or_default()
-    );
-    for value in &measurement.values {
-        if value.value.is_some() {
-            println!("Value: {}", value);
+use pdg_rs::{Pdg, PdgResult};
+
+fn main() -> PdgResult<()> {
+    let pdg = Pdg::open()?;
+
+    let Some(result) = pdg
+        .search_text("extra dimensions Newtonian")?
+        .into_iter()
+        .find(|result| result.text.starts_with("This section includes"))
+    else {
+        return Ok(());
+    };
+    println!("{}\n", result.text);
+    let measurements = pdg.measurements_for(result.pdgid)?;
+    for measurement in &measurements {
+        println!(
+            "{:<25} ({})",
+            measurement.reference.document_id,
+            measurement.comment.clone().unwrap_or_default()
+        );
+        for value in &measurement.values {
+            if value.value.is_some() {
+                println!("Value: {}", value);
+            }
+            for footnote in &measurement.footnotes {
+                println!("{}", footnote.text.clone().unwrap_or_default());
+            }
         }
-        for footnote in &measurement.footnotes {
-            println!("{}", footnote.text.clone().unwrap_or_default());
-        }
+        println!();
     }
-    println!();
-}
-println!("\nReferences:\n");
-for measurement in measurements {
-    println!(
-        "{:<25}  {}",
-        measurement.reference.document_id,
-        measurement
-            .reference
-            .doi
-            .clone()
-            .or(measurement.reference.inspire_id.clone())
-            .or(measurement.reference.title.clone())
-            .unwrap_or_default()
-    );
+    println!("\nReferences:\n");
+    for measurement in measurements {
+        println!(
+            "{:<25}  {}",
+            measurement.reference.document_id,
+            measurement
+                .reference
+                .doi
+                .clone()
+                .or(measurement.reference.inspire_id.clone())
+                .or(measurement.reference.title.clone())
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 ```
 ```text
@@ -406,7 +436,7 @@ Currently this is just a working example. I have some plans to expand the interf
 
 ## Citations
 When using data from `pdg-rs`, please cite:
-```
+```bibtex
 @article{ParticleDataGroup:2024cfk,
     author = "Navas, S. and others",
     collaboration = "Particle Data Group",
