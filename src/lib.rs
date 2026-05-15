@@ -2,15 +2,16 @@
 #![warn(missing_docs)]
 #![allow(clippy::empty_docs)]
 #![doc = ""]
-use rusqlite::{Connection, MAIN_DB, OptionalExtension, params_from_iter, types::Value};
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
 
+mod database;
 mod models;
 pub use models::*;
 
-static PDG_BYTES: &[u8] = include_bytes!("../data/pdgall-2025-v0.2.2.sqlite");
-
-/// The PDG edition bundled with this crate.
+/// The default PDG edition used by this crate.
 pub const LATEST_EDITION: &str = "2025";
 
 /// Result type returned by fallible `pdg-rs` operations.
@@ -19,9 +20,43 @@ pub type PdgResult<T> = Result<T, PdgError>;
 /// Errors returned by database access, code parsing, and quantum number conversion.
 #[derive(Error, Debug)]
 pub enum PdgError {
-    /// A `SQLite` error from the embedded PDG database.
+    /// A `SQLite` error from the PDG database.
     #[error(transparent)]
     SqliteError(#[from] rusqlite::Error),
+    /// An I/O error occurred while reading, writing, or caching the PDG database.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// No OS-specific cache directory could be found.
+    #[error("PDG database cache directory is unavailable")]
+    CacheDirectoryUnavailable,
+    /// The PDG database is not cached and network access is disabled.
+    #[error("PDG database is not cached at {0:?} and downloads are disabled")]
+    OfflineDatabaseMissing(PathBuf),
+    /// Downloading the PDG database failed.
+    #[error("failed to download PDG database: {0}")]
+    Download(String),
+    /// A cached or downloaded PDG database has the wrong byte length.
+    #[error(
+        "PDG database size mismatch for {path:?}: expected {expected} bytes, got {actual} bytes"
+    )]
+    DatabaseSizeMismatch {
+        /// Path to the database file that was checked.
+        path: PathBuf,
+        /// Expected byte length.
+        expected: u64,
+        /// Actual byte length.
+        actual: u64,
+    },
+    /// A cached or downloaded PDG database has the wrong SHA-256 digest.
+    #[error("PDG database checksum mismatch for {path:?}: expected {expected}, got {actual}")]
+    DatabaseChecksumMismatch {
+        /// Path to the database file that was checked.
+        path: PathBuf,
+        /// Expected SHA-256 digest.
+        expected: &'static str,
+        /// Actual SHA-256 digest.
+        actual: String,
+    },
     /// A value type code was not recognized.
     #[error("Failed to parse ValueType: {0}")]
     ParseValueType(String),
@@ -39,7 +74,7 @@ pub enum PdgError {
     Custom(String),
 }
 
-/// Handle for querying the bundled Particle Data Group database.
+/// Handle for querying the Particle Data Group database.
 ///
 /// Create a handle with [`Pdg::open`], then use lookup methods such as
 /// [`Pdg::particle`], [`Pdg::mcid`], [`Pdg::search_particles`], and
@@ -68,21 +103,79 @@ impl Pdg {
     const PARTICLE_JOIN: &'static str =
         "JOIN pdgid ON pdgid.pdgid = pdgparticle.pdgid AND pdgid.data_type = 'PART'";
 
-    /// Opens the bundled PDG `SQLite` database in memory.
+    /// Opens the default PDG `SQLite` database.
+    ///
+    /// If `PDG_RS_DB_PATH` is set, that exact database file is opened. Otherwise,
+    /// the default database is loaded from the local cache, downloading and
+    /// verifying it first when needed.
     ///
     /// This also initializes the temporary full-text search index used by
     /// [`Pdg::search_text`].
     ///
     /// # Errors
     ///
-    /// Returns [`PdgError::SqliteError`] if the embedded database cannot be
-    /// deserialized or initialized.
+    /// Returns an error if the configured database cannot be opened, the cached
+    /// database cannot be verified, or the default database cannot be
+    /// downloaded.
     pub fn open() -> PdgResult<Self> {
-        let mut conn = Connection::open_in_memory()?;
-        conn.deserialize_bytes(MAIN_DB, PDG_BYTES)?;
+        Self::open_path(database::ensure_database()?)
+    }
+
+    /// Opens the default PDG `SQLite` database without downloading it.
+    ///
+    /// If `PDG_RS_DB_PATH` is set, that exact database file is opened. Otherwise,
+    /// this opens the verified cached copy of the default database.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdgError::OfflineDatabaseMissing`] if the default database is
+    /// not cached. Returns another error if the configured database cannot be
+    /// opened or the cached database cannot be verified.
+    pub fn open_cached() -> PdgResult<Self> {
+        Self::open_path(database::cached_database()?)
+    }
+
+    /// Opens a PDG `SQLite` database at `path`.
+    ///
+    /// This is useful for applications that manage their own database file or
+    /// want to use a different PDG edition. Use [`Pdg::open`] for the default
+    /// cache-or-download behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if `path` cannot be opened or initialized.
+    pub fn open_path(path: impl AsRef<Path>) -> PdgResult<Self> {
+        let conn = Connection::open(path)?;
         let pdg = Self { conn };
         pdg.initialize_text_search()?;
         Ok(pdg)
+    }
+
+    /// Ensures the default database exists in the local cache and returns its path.
+    ///
+    /// If `PDG_RS_DB_PATH` is set, this returns that path without downloading or
+    /// validating it. Otherwise, this downloads the default database when it is
+    /// missing or invalid, unless `PDG_RS_OFFLINE` disables network access.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache directory is unavailable, the database
+    /// cannot be downloaded, or the downloaded file fails verification.
+    pub fn ensure_database() -> PdgResult<PathBuf> {
+        database::ensure_database()
+    }
+
+    /// Returns the cache path for the default database.
+    ///
+    /// This does not check whether the database exists and does not consider
+    /// `PDG_RS_DB_PATH`, which is an explicit override rather than a cache path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdgError::CacheDirectoryUnavailable`] if no cache directory can
+    /// be found.
+    pub fn cached_database_path() -> PdgResult<PathBuf> {
+        database::cached_database_path()
     }
 
     /// Returns the underlying `SQLite` connection.
@@ -1094,9 +1187,17 @@ fn fts_query(query: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn test_pdg() -> Pdg {
+        Pdg::open_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/pdgall-2025-v0.2.2.sqlite"
+        ))
+        .unwrap()
+    }
+
     #[test]
     fn charged_decay_states_do_not_expand_to_antiparticle_siblings() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let names = db
             .expand_decay_state_names("pi+".to_string(), DecayStateExpansion::Inclusive)
             .unwrap();
@@ -1108,7 +1209,7 @@ mod tests {
 
     #[test]
     fn text_search_finds_pdgid_descriptions() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let results = db.search_text("K(S)0 MEAN LIFE").unwrap();
 
         let result = results
@@ -1125,7 +1226,7 @@ mod tests {
 
     #[test]
     fn text_search_finds_pdgtext_rows() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let results = db
             .search_text("Measurements Kbar0 divided convert")
             .unwrap();
@@ -1145,7 +1246,7 @@ mod tests {
 
     #[test]
     fn text_search_finds_footnote_rows() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let results = db.search_text("normalisation decay").unwrap();
 
         let result = results
@@ -1161,7 +1262,7 @@ mod tests {
 
     #[test]
     fn text_search_handles_punctuation_heavy_queries() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let results = db.search_text("K(S)0").unwrap();
 
         assert!(!results.is_empty());
@@ -1170,7 +1271,7 @@ mod tests {
 
     #[test]
     fn text_search_orders_by_score() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let results = db.search_text("form factors").unwrap();
 
         assert!(results.len() > 1);
@@ -1183,7 +1284,7 @@ mod tests {
 
     #[test]
     fn text_search_returns_empty_results_for_empty_or_missing_queries() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
 
         assert!(db.search_text(".,()").unwrap().is_empty());
         assert!(db.search_text("zzzzzznotapdgterm").unwrap().is_empty());

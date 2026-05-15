@@ -1348,9 +1348,17 @@ mod tests {
         PropertySource,
     };
 
+    fn test_pdg() -> Pdg {
+        Pdg::open_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/pdgall-2025-v0.2.2.sqlite"
+        ))
+        .unwrap()
+    }
+
     #[test]
     fn displays_particle_identity_and_quantum_numbers() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         assert_eq!(
@@ -1361,7 +1369,7 @@ mod tests {
 
     #[test]
     fn displays_self_conjugate_particles() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let photon = db.particle("gamma").unwrap().unwrap();
 
         assert_eq!(
@@ -1372,7 +1380,7 @@ mod tests {
 
     #[test]
     fn displays_fractional_charges() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
 
         let down_quark = db.particle("d").unwrap().unwrap();
         assert_eq!(
@@ -1401,7 +1409,7 @@ mod tests {
 
     #[test]
     fn classifies_representative_particles() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
 
         let pion = db.particle("pi+").unwrap().unwrap();
         assert_eq!(pion.description, "pi+-");
@@ -1426,7 +1434,7 @@ mod tests {
 
     #[test]
     fn checks_particle_classes() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
 
         let pion = db.particle("pi+").unwrap().unwrap();
         assert!(pion.particle_class == ParticleClass::Meson);
@@ -1438,7 +1446,7 @@ mod tests {
 
     #[test]
     fn queries_particles_by_class() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let leptons = db
             .search_particles(ParticleSearchQuery::new().class(ParticleClass::Lepton))
             .unwrap();
@@ -1456,7 +1464,7 @@ mod tests {
 
     #[test]
     fn searches_particles_by_class() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion_mesons = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1484,7 +1492,7 @@ mod tests {
 
     #[test]
     fn searches_by_class_and_angular_momentum() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let vector_mesons = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1502,7 +1510,7 @@ mod tests {
 
     #[test]
     fn searches_by_particle_type_charge_and_quantum_numbers() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let scalar_neutral_mesons = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1536,7 +1544,7 @@ mod tests {
 
     #[test]
     fn searches_for_missing_optional_quantum_numbers() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1556,7 +1564,7 @@ mod tests {
 
     #[test]
     fn searches_by_normalized_mass_range() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let light_mesons = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1572,7 +1580,7 @@ mod tests {
 
     #[test]
     fn range_searches_use_section_derived_properties() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1595,7 +1603,7 @@ mod tests {
 
     #[test]
     fn searches_by_ambiguous_width_range() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(ParticleSearchQuery::new().width_range_mev(0.0, 50.0))
             .unwrap();
@@ -1615,7 +1623,7 @@ mod tests {
 
     #[test]
     fn searches_by_lifetime_range() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(ParticleSearchQuery::new().lifetime_range_seconds(1e-8, 1e-7))
             .unwrap();
@@ -1626,7 +1634,7 @@ mod tests {
 
     #[test]
     fn searches_by_decay_final_states() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let sigma_modes = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1655,7 +1663,7 @@ mod tests {
 
     #[test]
     fn decay_contains_allows_extra_final_states() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1669,7 +1677,7 @@ mod tests {
 
     #[test]
     fn literal_exact_decay_search_does_not_expand_state_names() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1688,7 +1696,7 @@ mod tests {
 
     #[test]
     fn searches_by_decay_initial_and_final_states() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion_modes = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1702,7 +1710,7 @@ mod tests {
 
     #[test]
     fn searches_decay_states_using_item_expansion() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let kaon_modes = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1716,7 +1724,7 @@ mod tests {
 
     #[test]
     fn neutral_kaon_exact_decay_search_includes_kaon_family_modes() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1759,7 +1767,7 @@ mod tests {
 
     #[test]
     fn literal_neutral_kaon_exact_decay_search_does_not_expand_family_modes() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let particles = db
             .search_particles(
                 ParticleSearchQuery::new()
@@ -1783,7 +1791,7 @@ mod tests {
 
     #[test]
     fn loads_items_by_name() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion_pair = db.item("pi+-").unwrap().unwrap();
 
         assert_eq!(pion_pair.name, "pi+-");
@@ -1793,7 +1801,7 @@ mod tests {
 
     #[test]
     fn loads_item_children_with_particles() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion_children = db.item_children("pi+-").unwrap();
 
         assert_eq!(pion_children.len(), 2);
@@ -1817,7 +1825,7 @@ mod tests {
 
     #[test]
     fn item_exposes_own_navigation() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.item("pi+").unwrap().unwrap();
         let kaon_group = db.item("K").unwrap().unwrap();
 
@@ -1847,7 +1855,7 @@ mod tests {
 
     #[test]
     fn particle_exposes_item_context() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         assert_eq!(pion.item().unwrap().unwrap().name, "pi+");
@@ -1867,7 +1875,7 @@ mod tests {
 
     #[test]
     fn particle_exposes_related_particles() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
         let related_particles = pion.related_particles().unwrap();
 
@@ -1890,7 +1898,7 @@ mod tests {
 
     #[test]
     fn loads_texts_for_data_entries() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let texts = db.texts_for("S008M").unwrap();
 
         assert_eq!(texts.len(), 1);
@@ -1908,7 +1916,7 @@ mod tests {
 
     #[test]
     fn loads_footnotes_for_data_entries() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let footnotes = db.footnotes_for("S008M").unwrap();
 
         assert!(footnotes.len() >= 10);
@@ -1919,7 +1927,7 @@ mod tests {
 
     #[test]
     fn particle_forwards_text_and_footnote_lookups() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         assert!(pion.texts().unwrap().is_empty());
@@ -1928,7 +1936,7 @@ mod tests {
 
     #[test]
     fn loads_measurements_for_data_entries() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let measurements = db.measurements_for("S008M").unwrap();
         let first = measurements.first().unwrap();
         let first_value = first.values.first().unwrap();
@@ -1965,7 +1973,7 @@ mod tests {
 
     #[test]
     fn particle_loads_measurements_for_data_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
         let particle_measurements = pion.measurements_for(DataType::Mass).unwrap();
         let direct_measurements = db.measurements_for("S008M").unwrap();
@@ -1979,14 +1987,14 @@ mod tests {
 
     #[test]
     fn missing_measurements_return_empty_vec() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
 
         assert!(db.measurements_for("NO_SUCH_PDGID").unwrap().is_empty());
     }
 
     #[test]
     fn lifetime_uses_lifetime_data_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         let mass = pion.mass().unwrap().unwrap();
@@ -1998,7 +2006,7 @@ mod tests {
 
     #[test]
     fn width_uses_full_width_data_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let z_boson = db.particle("Z0").unwrap().unwrap();
 
         let width = z_boson.width().unwrap().unwrap();
@@ -2010,7 +2018,7 @@ mod tests {
 
     #[test]
     fn properties_fall_back_to_section_children() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let a0 = db.particle("a_0(980)0").unwrap().unwrap();
 
         let mass = a0.mass().unwrap().unwrap();
@@ -2029,7 +2037,7 @@ mod tests {
 
     #[test]
     fn exclusive_branching_fractions_include_decay_products() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         let branching_fractions = pion.exclusive_branching_fractions().unwrap();
@@ -2073,7 +2081,7 @@ mod tests {
 
     #[test]
     fn branching_fractions_include_related_ratios() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         let branching_fractions = pion.exclusive_branching_fractions().unwrap();
@@ -2104,7 +2112,7 @@ mod tests {
 
     #[test]
     fn branching_fractions_preserve_non_ratio_related_data() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let kaon = db.particle("K+").unwrap().unwrap();
 
         let branching_fractions = kaon.exclusive_branching_fractions().unwrap();
@@ -2126,7 +2134,7 @@ mod tests {
 
     #[test]
     fn inclusive_and_exclusive_branching_fractions_are_grouped() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let b0 = db.particle("B0").unwrap().unwrap();
 
         let inclusive = b0.inclusive_branching_fractions().unwrap();
@@ -2144,7 +2152,7 @@ mod tests {
 
     #[test]
     fn branching_ratios_include_descriptions() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         let branching_ratios = pion.branching_ratios().unwrap();
@@ -2164,7 +2172,7 @@ mod tests {
 
     #[test]
     fn branching_ratios_include_errors() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let sigma = db
             .search_particles(ParticleSearchQuery::new().name_contains("Sigma(2010)"))
             .unwrap()
@@ -2182,7 +2190,7 @@ mod tests {
 
     #[test]
     fn mass_includes_confidence_level_and_limit_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let down_quark = db.particle("d").unwrap().unwrap();
         let mass = down_quark.mass().unwrap().unwrap();
 
@@ -2196,7 +2204,7 @@ mod tests {
 
     #[test]
     fn lifetime_includes_confidence_level_and_limit_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let proton = db.particle("p").unwrap().unwrap();
         let lifetime = proton.lifetime().unwrap().unwrap();
 
@@ -2206,7 +2214,7 @@ mod tests {
 
     #[test]
     fn width_preserves_confidence_level_and_limit_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let d_star = db.particle("D^*(2007)0").unwrap().unwrap();
         let width = d_star.width().unwrap().unwrap();
 
@@ -2216,7 +2224,7 @@ mod tests {
 
     #[test]
     fn data_entry_loads_measurements_from_own_pdgid() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
         let mass = pion.mass().unwrap().unwrap();
 
@@ -2232,7 +2240,7 @@ mod tests {
 
     #[test]
     fn data_entry_displays_database_display_fields() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let z_boson = db.particle("Z0").unwrap().unwrap();
         let pion = db.particle("pi+").unwrap().unwrap();
         let d_star = db.particle("D^*(2007)0").unwrap().unwrap();
@@ -2261,7 +2269,7 @@ mod tests {
 
     #[test]
     fn upper_limit_branching_fractions_preserve_limit_type() {
-        let db = Pdg::open().unwrap();
+        let db = test_pdg();
         let pion = db.particle("pi+").unwrap().unwrap();
 
         let branching_fractions = pion.exclusive_branching_fractions().unwrap();

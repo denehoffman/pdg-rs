@@ -10,6 +10,7 @@ repository = "https://github.com/denehoffman/pdg-rs"
 keywords = ["particle", "physics", "pdg"]
 categories = ["command-line-utilities", "science"]
 rust-version = "1.88.0"
+exclude = ["data/*.sqlite"]
 
 [[bin]]
 name = "pdg"
@@ -18,12 +19,16 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 comfy-table = { version = "7.2.2", features = ["custom_styling"] }
+directories = "6.0.0"
 num = { version = "0.4.3", optional = true }
 owo-colors = "4.3.0"
-rusqlite = { version = "0.39.0", features = ["bundled", "serialize"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.10.9"
+tempfile = "3.23.0"
 thiserror = "2.0.18"
+ureq = "2.12.1"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
@@ -43,6 +48,7 @@ pedantic = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 format_push_string = "allow"
+multiple_crate_versions = "allow"
 
 [profile.release]
 opt-level = 3

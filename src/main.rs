@@ -1,4 +1,4 @@
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, env, fs, path::PathBuf, str::FromStr};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{ColumnConstraint, ContentArrangement, Width};
@@ -220,6 +220,9 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
     about = "Search the Particle Data Group database"
 )]
 struct Cli {
+    /// Require an already cached database instead of downloading it.
+    #[arg(long, global = true)]
+    offline: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -230,8 +233,28 @@ enum Commands {
     Show(ShowCommand),
     /// Search particles or text.
     Search(SearchCommand),
+    /// Manage the cached PDG database.
+    Db(DbCommand),
     /// Reserved for the future terminal UI.
     Tui,
+}
+
+#[derive(Parser)]
+struct DbCommand {
+    #[command(subcommand)]
+    command: DbCommands,
+}
+
+#[derive(Subcommand)]
+enum DbCommands {
+    /// Show whether the default database is available locally.
+    Status,
+    /// Download and verify the default database.
+    Fetch,
+    /// Print the default cache path.
+    Path,
+    /// Remove the default cached database.
+    Clear,
 }
 
 #[derive(Parser)]
@@ -395,26 +418,75 @@ fn main() -> CliResult<()> {
     };
 
     match command {
-        Commands::Show(command) => run_show(&command.pdgid, command.output),
+        Commands::Show(command) => run_show(&command.pdgid, command.output, cli.offline),
         Commands::Search(command) => match command.command {
-            SearchCommands::Particles(command) => run_particle(command),
-            SearchCommands::Text(command) => run_text(command),
+            SearchCommands::Particles(command) => run_particle(command, cli.offline),
+            SearchCommands::Text(command) => run_text(command, cli.offline),
         },
+        Commands::Db(command) => run_db(&command),
         Commands::Tui => Err(CliError::InvalidArgument(
-            "TUI is not implemented yet; use `pdg show`, `pdg search particles`, or `pdg search text`"
+            "TUI is not implemented yet; use `pdg show`, `pdg search particles`, `pdg search text`, or `pdg db`"
                 .into(),
         )),
     }
 }
 
-fn run_particle(command: ParticleCommand) -> CliResult<()> {
+fn open_pdg(offline: bool) -> CliResult<Pdg> {
+    Ok(if offline {
+        Pdg::open_cached()?
+    } else {
+        Pdg::open()?
+    })
+}
+
+fn run_db(command: &DbCommand) -> CliResult<()> {
+    match command.command {
+        DbCommands::Status => {
+            if let Some(path) = env::var_os("PDG_RS_DB_PATH").map(PathBuf::from) {
+                Pdg::open_cached()?;
+                println!("database override: {}", path.display());
+                return Ok(());
+            }
+
+            let path = Pdg::cached_database_path()?;
+            if path.exists() {
+                Pdg::open_cached()?;
+                println!("cached database: {}", path.display());
+            } else {
+                println!("database not cached: {}", path.display());
+            }
+            Ok(())
+        }
+        DbCommands::Fetch => {
+            let path = Pdg::ensure_database()?;
+            println!("{}", path.display());
+            Ok(())
+        }
+        DbCommands::Path => {
+            println!("{}", Pdg::cached_database_path()?.display());
+            Ok(())
+        }
+        DbCommands::Clear => {
+            let path = Pdg::cached_database_path()?;
+            if path.exists() {
+                fs::remove_file(&path)?;
+                println!("removed {}", path.display());
+            } else {
+                println!("database not cached: {}", path.display());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn run_particle(command: ParticleCommand, offline: bool) -> CliResult<()> {
     if command.query.is_none() && !has_particle_filters(&command.filters) {
         ParticleCommand::command().print_help()?;
         println!();
         return Ok(());
     }
 
-    let db = Pdg::open()?;
+    let db = open_pdg(offline)?;
     let mut particles: Vec<_> = if let Some(mcid) = command.filters.mcid {
         db.mcid(mcid)?.into_iter().collect()
     } else {
@@ -425,8 +497,8 @@ fn run_particle(command: ParticleCommand) -> CliResult<()> {
     output_particles(&particles, &command.output)
 }
 
-fn run_text(command: TextCommand) -> CliResult<()> {
-    let db = Pdg::open()?;
+fn run_text(command: TextCommand, offline: bool) -> CliResult<()> {
+    let db = open_pdg(offline)?;
     let results = apply_limit(db.search_text(command.query)?, command.limit, command.all);
     match command.format {
         OutputFormat::Pretty => print_text_results(&db, &results, command.show_full_text),
@@ -442,8 +514,8 @@ fn run_text(command: TextCommand) -> CliResult<()> {
     }
 }
 
-fn run_show(pdgid: &str, output: ShowOutput) -> CliResult<()> {
-    let db = Pdg::open()?;
+fn run_show(pdgid: &str, output: ShowOutput, offline: bool) -> CliResult<()> {
+    let db = open_pdg(offline)?;
     let entry = db
         .pdgid(pdgid)?
         .ok_or_else(|| CliError::NotFound(pdgid.to_string()))?;

@@ -16,7 +16,7 @@ cargo install pdg-rs
 ## Usage
 
 ### CLI
-This crate provides a `pdg` binary for searching the embedded database:
+This crate provides a `pdg` binary for searching the PDG database. The first command that needs the default database downloads and verifies it in your OS-specific cache directory:
 ```bash
 pdg show S008245
 pdg show M036 --summary
@@ -27,8 +27,10 @@ pdg search particles --decays-to K\(S\)0,K\(S\)0 --charge 0
 ```
 `pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Monte Carlo particle IDs are exposed as `mcid` in the Rust API and can be used as a particle search filter with `pdg search particles --mcid 211`.
 
+Use `pdg db fetch`, `pdg db status`, `pdg db path`, and `pdg db clear` to manage the cached database. Set `PDG_RS_DB_PATH` to open a specific `SQLite` database file, `PDG_RS_CACHE_DIR` to choose a cache directory, or pass `--offline` to require an existing cached database.
+
 ### Get information about a specific particle:
-```rust
+```rust,no_run
 use pdg_rs::{Pdg, PdgResult};
 
 fn main() -> PdgResult<()> {
@@ -46,7 +48,7 @@ fn main() -> PdgResult<()> {
 ```
 Most queries return `Option`s because we can't guarantee the search term will yield results (for instance, the "p-" doesn't exist, so asking for it should return `None`). The `PdgError` type is mostly reserved for errors encountered while parsing data from the sqlite database. Particle information is either directly available (charge, quantum numbers) or queryable (mass, lifetime). Most of these methods will produce unique data types (like a `Mass` struct) which contain additional information:
 
-```rust
+```rust,no_run
 use pdg_rs::{Pdg, PdgResult};
 
 fn main() -> PdgResult<()> {
@@ -97,7 +99,7 @@ We are sometimes limited by the type schema defined by the PDG, but this is just
 
 ### Decays
 Branching ratios/fractions are also available in the database, and `pdg-rs` provides an interface for exploring them:
-```rust
+```rust,no_run
 use pdg_rs::{Pdg, PdgResult};
 
 fn main() -> PdgResult<()> {
@@ -123,7 +125,7 @@ fn main() -> PdgResult<()> {
 <1.6E-6              pi+ --> mu- e+ e+ nu
 ```
 Of course, we might like to see how these measurements were obtained. Sometimes we may be able to find a raw branching fraction measurement, but more often these are associated to measurements of branching ratios. We can query branching ratios, but we can also find related data entries):
-```rust
+```rust,no_run
 use pdg_rs::{Pdg, PdgResult};
 
 fn main() -> PdgResult<()> {
@@ -215,7 +217,7 @@ fn main() -> PdgResult<()> {
 
 ### Particle searches
 It is often useful to search for all particles which satisfy some set of properties. This is currently sort of difficult to do with just the PDG website or other programmatic interfaces, but generally enough information exists in the database itself to allow for complex searches. For example, let's search for all particles which may decay to $`K_S^0K_S^0`$. By default, searches are inclusive, so $`K_S^0`$ will be mapped to other entries like $`K^0`$ and $`\bar{K}^0`$, which is useful since these are often the states listed in the database. Of course, not everything that can decay to $`K\bar{K}`$ can also decay to $`K_S^0K_S^0`$, and the PDG sometimes includes forbidden decays simply because there are published results, so it's often nice to narrow the search with additional information, such as $`P`$, $`C`$, and charge:
-```rust
+```rust,no_run
 use pdg_rs::{Charge, Parity, ParticleSearchQuery, Pdg, PdgResult};
 
 fn main() -> PdgResult<()> {
@@ -269,7 +271,7 @@ f_0(1770)0 (M264, Meson, Self-Conjugate, charge 0), I=0, G=+, J=0, P=+, C=+
 There are lots of interesting ways to filter particle searches, such as selecting particles in a certain mass range.
 
 The database itself contains data beyond individual particle and decay measurements. A lot of this data is hard to classify, so it's often useful to use search queries. For example, if we wanted to learn about constraints on extra dimensions, we might do the following:
-```rust
+```rust,no_run
 use pdg_rs::{Pdg, PdgResult};
 
 fn main() -> PdgResult<()> {

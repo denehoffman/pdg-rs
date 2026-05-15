@@ -1,14 +1,27 @@
 use assert_cmd::Command;
 use predicates::{prelude::PredicateBooleanExt, str::contains};
 
+fn pdg_command() -> Command {
+    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    cmd.env(
+        "PDG_RS_DB_PATH",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/pdgall-2025-v0.2.2.sqlite"
+        ),
+    );
+    cmd
+}
+
 #[test]
 fn help_mentions_only_canonical_subcommands() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.arg("--help")
         .assert()
         .success()
         .stdout(contains("show"))
         .stdout(contains("search"))
+        .stdout(contains("db"))
         .stdout(contains("tui"))
         .stdout(contains("  particle").not())
         .stdout(contains("  pdgid").not())
@@ -16,8 +29,27 @@ fn help_mentions_only_canonical_subcommands() {
 }
 
 #[test]
+fn db_path_prints_cache_path() {
+    let mut cmd = pdg_command();
+    cmd.args(["db", "path"])
+        .assert()
+        .success()
+        .stdout(contains("pdgall-2025-v0.2.2.sqlite"));
+}
+
+#[test]
+fn db_status_reports_database_override() {
+    let mut cmd = pdg_command();
+    cmd.args(["db", "status"])
+        .assert()
+        .success()
+        .stdout(contains("database override:"))
+        .stdout(contains("pdgall-2025-v0.2.2.sqlite"));
+}
+
+#[test]
 fn search_particles_requires_query_or_filter() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["search", "particles"])
         .assert()
         .success()
@@ -26,7 +58,7 @@ fn search_particles_requires_query_or_filter() {
 
 #[test]
 fn search_particles_prints_summary() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["search", "particles", "K", "--limit", "3"])
         .assert()
         .success()
@@ -38,7 +70,7 @@ fn search_particles_prints_summary() {
 
 #[test]
 fn search_particles_accepts_filters() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["search", "particles", "--class", "lepton", "--limit", "3"])
         .assert()
         .success()
@@ -47,7 +79,7 @@ fn search_particles_accepts_filters() {
 
 #[test]
 fn search_particles_accepts_mcid_without_query() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["search", "particles", "--mcid", "22"])
         .assert()
         .success()
@@ -58,7 +90,7 @@ fn search_particles_accepts_mcid_without_query() {
 
 #[test]
 fn search_particles_accepts_decay_filters() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args([
         "search",
         "particles",
@@ -76,7 +108,7 @@ fn search_particles_accepts_decay_filters() {
 
 #[test]
 fn search_particles_uses_section_derived_properties() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args([
         "search",
         "particles",
@@ -98,7 +130,7 @@ fn search_particles_uses_section_derived_properties() {
 
 #[test]
 fn search_particles_filters_section_derived_properties() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args([
         "search",
         "particles",
@@ -116,7 +148,7 @@ fn search_particles_filters_section_derived_properties() {
 
 #[test]
 fn search_text_prints_results() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["search", "text", "form factors", "--limit", "3"])
         .assert()
         .success()
@@ -130,7 +162,7 @@ fn search_text_prints_results() {
 
 #[test]
 fn search_text_includes_footnotes() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["search", "text", "normalisation decay", "--limit", "2"])
         .assert()
         .success()
@@ -141,7 +173,7 @@ fn search_text_includes_footnotes() {
 
 #[test]
 fn show_finds_generic_pdgid_rows_with_labels() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "S008245"])
         .assert()
         .success()
@@ -151,7 +183,7 @@ fn show_finds_generic_pdgid_rows_with_labels() {
 
 #[test]
 fn show_particle_promotes_section_properties_with_sources() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "M036", "--summary"])
         .assert()
         .success()
@@ -167,7 +199,7 @@ fn show_particle_promotes_section_properties_with_sources() {
 
 #[test]
 fn show_particle_does_not_expand_related_branching_measurements() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "M036"])
         .assert()
         .success()
@@ -177,7 +209,7 @@ fn show_particle_does_not_expand_related_branching_measurements() {
 
 #[test]
 fn show_measurements_use_reference_blocks() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     let stdout = String::from_utf8(
         cmd.args(["show", "M036R2"])
             .assert()
@@ -206,7 +238,7 @@ fn show_measurements_use_reference_blocks() {
 
 #[test]
 fn show_particle_headline_includes_other_section_properties() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "S008", "--summary"])
         .assert()
         .success()
@@ -218,7 +250,7 @@ fn show_particle_headline_includes_other_section_properties() {
 
 #[test]
 fn show_summary_omits_full_sections() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "M036", "--summary"])
         .assert()
         .success()
@@ -231,7 +263,7 @@ fn show_summary_omits_full_sections() {
 
 #[test]
 fn show_text_is_attached_to_title() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "S071DGF"])
         .assert()
         .success()
@@ -244,7 +276,7 @@ fn show_text_is_attached_to_title() {
 
 #[test]
 fn show_related_details_expands_related_measurements() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.args(["show", "M036", "--related-details"])
         .assert()
         .success()
@@ -254,7 +286,7 @@ fn show_related_details_expands_related_measurements() {
 
 #[test]
 fn show_json_is_valid() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     let output = cmd
         .args(["show", "S008", "--format", "json"])
         .assert()
@@ -269,7 +301,7 @@ fn show_json_is_valid() {
 
 #[test]
 fn show_json_includes_measurement_details() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     let output = cmd
         .args(["show", "M036R2", "--format", "json"])
         .assert()
@@ -294,7 +326,7 @@ fn show_json_includes_measurement_details() {
 
 #[test]
 fn search_particles_json_is_valid() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     let output = cmd
         .args([
             "search",
@@ -316,7 +348,7 @@ fn search_particles_json_is_valid() {
 
 #[test]
 fn search_text_json_is_valid() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     let output = cmd
         .args([
             "search",
@@ -338,7 +370,7 @@ fn search_text_json_is_valid() {
 
 #[test]
 fn search_text_json_includes_footnote_source() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     let output = cmd
         .args([
             "search",
@@ -361,7 +393,7 @@ fn search_text_json_includes_footnote_source() {
 
 #[test]
 fn tui_stub_is_reserved() {
-    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let mut cmd = pdg_command();
     cmd.arg("tui")
         .assert()
         .failure()
