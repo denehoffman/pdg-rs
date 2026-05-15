@@ -245,17 +245,17 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mass_entries = if mass_range.is_some() {
-            Some(self.data_entries_by_parent(DataType::Mass)?)
+            Some(self.property_entries_by_parent(DataType::Mass)?)
         } else {
             None
         };
         let width_entries = if width_range.is_some() {
-            Some(self.data_entries_by_parent(DataType::FullWidth)?)
+            Some(self.property_entries_by_parent(DataType::FullWidth)?)
         } else {
             None
         };
         let lifetime_entries = if lifetime_range.is_some() {
-            Some(self.data_entries_by_parent(DataType::Lifetime)?)
+            Some(self.property_entries_by_parent(DataType::Lifetime)?)
         } else {
             None
         };
@@ -634,18 +634,18 @@ impl Pdg {
             .is_some())
     }
 
-    fn data_entries_by_parent(
+    fn property_entries_by_parent(
         &self,
         data_type: DataType,
     ) -> PdgResult<std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>> {
-        let data_type = data_type.to_code();
-        let sql = format!(
+        let data_type_code = data_type.to_code();
+        let direct_sql = format!(
             "SELECT {}, pdgid.parent_pdgid FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgdata.edition = ?2",
             DataEntry::COLUMNS
         );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map([&data_type, LATEST_EDITION], |row| {
+        let mut direct_stmt = self.conn.prepare(&direct_sql)?;
+        let direct_rows = direct_stmt
+            .query_map([data_type_code, LATEST_EDITION], |row| {
                 Ok((
                     row.get::<_, PdgId>(DataEntry::COLUMN_COUNT)?,
                     DataEntry::from_row(self, row)?,
@@ -653,28 +653,59 @@ impl Pdg {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut grouped =
-            std::collections::HashMap::<PdgId, (Vec<DataEntry<'_>>, Vec<DataEntry<'_>>)>::new();
-        for (parent_pdgid, entry) in rows {
-            let (all_entries, summary_entries) = grouped.entry(parent_pdgid).or_default();
-            all_entries.push(entry.clone());
-            if entry.in_summary_table {
-                summary_entries.push(entry);
-            }
-        }
+        let section_sql = format!(
+            "SELECT {}, section.parent_pdgid FROM pdgdata
+            JOIN pdgid child ON child.id = pdgdata.pdgid_id
+            JOIN pdgid section ON section.pdgid = child.parent_pdgid
+            WHERE child.data_type = ?1
+                AND section.data_type = ?2
+                AND pdgdata.edition = ?3",
+            DataEntry::COLUMNS
+        );
+        let mut section_stmt = self.conn.prepare(&section_sql)?;
+        let section_rows = section_stmt
+            .query_map(
+                [data_type_code, DataType::Section.to_code(), LATEST_EDITION],
+                |row| {
+                    Ok((
+                        row.get::<_, PdgId>(DataEntry::COLUMN_COUNT)?,
+                        DataEntry::from_row(self, row)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(grouped
-            .into_iter()
-            .map(|(pdg_id, (all_entries, summary_entries))| {
-                let entries = if summary_entries.is_empty() {
-                    all_entries
-                } else {
-                    summary_entries
-                };
-                (pdg_id, entries)
-            })
-            .collect())
+        let direct_entries = group_property_entries(direct_rows);
+        let section_entries = group_property_entries(section_rows);
+
+        Ok(section_entries.into_iter().chain(direct_entries).collect())
     }
+}
+
+fn group_property_entries<'pdg>(
+    rows: Vec<(PdgId, DataEntry<'pdg>)>,
+) -> std::collections::HashMap<PdgId, Vec<DataEntry<'pdg>>> {
+    let mut grouped =
+        std::collections::HashMap::<PdgId, (Vec<DataEntry<'pdg>>, Vec<DataEntry<'pdg>>)>::new();
+    for (parent_pdgid, entry) in rows {
+        let (all_entries, summary_entries) = grouped.entry(parent_pdgid).or_default();
+        all_entries.push(entry.clone());
+        if entry.in_summary_table {
+            summary_entries.push(entry);
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(|(pdg_id, (all_entries, summary_entries))| {
+            let entries = if summary_entries.is_empty() {
+                all_entries
+            } else {
+                summary_entries
+            };
+            (pdg_id, entries)
+        })
+        .collect()
 }
 
 #[derive(Copy, Clone)]

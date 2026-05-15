@@ -33,6 +33,7 @@ fn search_particles_prints_summary() {
         .success()
         .stdout(contains("Mass"))
         .stdout(contains("Quantum"))
+        .stdout(contains("Charge").not())
         .stdout(contains("Decays").not());
 }
 
@@ -94,6 +95,24 @@ fn search_particles_uses_section_derived_properties() {
     .stdout(contains("a_0(980)0"))
     .stdout(contains("980+-20 MeV"))
     .stdout(contains("50 to 100 MeV"));
+}
+
+#[test]
+fn search_particles_filters_section_derived_properties() {
+    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    cmd.args([
+        "search",
+        "particles",
+        "a_0(",
+        "--mass",
+        "1500..2000",
+        "--limit",
+        "20",
+    ])
+    .assert()
+    .success()
+    .stdout(contains("a_0(1710)0"))
+    .stdout(contains("a_0(980)0").not());
 }
 
 #[test]

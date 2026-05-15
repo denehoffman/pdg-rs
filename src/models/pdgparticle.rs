@@ -577,8 +577,7 @@ impl<'pdg> PdgParticle<'pdg> {
         let mut table = table();
         if full {
             table.set_header([
-                "PDG ID", "Name", "Class", "Type", "Charge", "MCID", "Mass", "Lifetime", "Width",
-                "Quantum",
+                "PDG ID", "Name", "Class", "Type", "MCID", "Mass", "Lifetime", "Width", "Quantum",
             ]);
             for particle in particles {
                 let [mass, lifetime, width] = particle.property_summary()?;
@@ -587,7 +586,6 @@ impl<'pdg> PdgParticle<'pdg> {
                     particle.name.clone(),
                     particle.particle_class.to_string(),
                     particle.particle_type.to_string(),
-                    particle.charge.to_string(),
                     particle
                         .mcid
                         .map(|value| value.to_string())
@@ -1415,6 +1413,29 @@ mod tests {
         assert!(light_mesons.iter().any(|particle| particle.name == "pi+"));
         assert!(light_mesons.iter().any(|particle| particle.name == "pi-"));
         assert!(light_mesons.iter().any(|particle| particle.name == "pi0"));
+    }
+
+    #[test]
+    fn range_searches_use_section_derived_properties() {
+        let db = Pdg::open().unwrap();
+        let particles = db
+            .search_particles(
+                ParticleSearchQuery::new()
+                    .name_contains("a_0(")
+                    .mass_range_mev(1500.0, 2000.0),
+            )
+            .unwrap();
+
+        assert!(
+            particles
+                .iter()
+                .any(|particle| particle.name == "a_0(1710)0")
+        );
+        assert!(
+            !particles
+                .iter()
+                .any(|particle| particle.name == "a_0(980)0")
+        );
     }
 
     #[test]
