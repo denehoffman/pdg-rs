@@ -3,16 +3,22 @@
 This crate enables programmatic access to the [Particle Data Group](https://pdg.lbl.gov)'s database of particle physics measurements. This project is independently developed and not affiliated with the PDG. Please use the citation at the end of this README as you would if you were using the PDG website!
 
 ## Installation
+
+### For programmatic usage inside another Rust crate
 ```bash
 cargo add pdg-rs
 ```
+### For general CLI usage
+```bash
+cargo install pdg-rs
+```
 > [!NOTE]
-> This crate has not yet been published, so this command will not actually function yet.
+> This crate has not yet been published, so these commands will not actually function yet.
 
 ## Usage
 
 ### CLI
-This crate also provides a `pdg` binary for searching the embedded database:
+This crate provides a `pdg` binary for searching the embedded database:
 ```bash
 pdg show S008245
 pdg show M036 --summary
@@ -140,9 +146,9 @@ for decay in decays {
         ANDERSON 1960              10.1103/PhysRev.119.2050
     3.2+-0.5E-9          G(pi+ --> e+ nu(e) e+ e-)/G(pi+ --> mu+ nu_mu)
         EGLI 1989                  10.1016/0370-2693(89)90358-4
-        BARANOV 1992               
-        KORENCHENKO 1976B          
-        KORENCHENKO 1971           
+        BARANOV 1992
+        KORENCHENKO 1976B
+        KORENCHENKO 1971
     <8.6E-6              G(pi+ --> mu+ nu_mu nu nubar)/G(pi+ --> mu+ nu_mu)
         AGUILAR-AREVALO 2020A      10.1103/PhysRevD.102.012001
 (1.230+-0.004)E-4    pi+ --> e+ nu_e
@@ -161,15 +167,15 @@ for decay in decays {
         DEPOMMIER 1968             10.1016/0550-3213(68)90305-2
         BACASTOW 1965              10.1103/PhysRev.139.B407
         BERTRAM 1965               10.1103/PhysRev.139.B617
-        DUNAITSEV 1965             
+        DUNAITSEV 1965
         BARTLETT 1964              10.1103/PhysRev.136.B1452
         DEPOMMIER 1963             10.1016/S0375-9601(63)80030-4
 (3.2+-0.5)E-9        pi+ --> e+ nu_e e+ e-
     3.2+-0.5E-9          G(pi+ --> e+ nu(e) e+ e-)/G(pi+ --> mu+ nu_mu)
         EGLI 1989                  10.1016/0370-2693(89)90358-4
-        BARANOV 1992               
-        KORENCHENKO 1976B          
-        KORENCHENKO 1971           
+        BARANOV 1992
+        KORENCHENKO 1976B
+        KORENCHENKO 1971
 <9E-6                pi+ --> mu+ nu_mu nu nubar
     <8.6E-6              G(pi+ --> mu+ nu_mu nu nubar)/G(pi+ --> mu+ nu_mu)
         AGUILAR-AREVALO 2020A      10.1103/PhysRevD.102.012001
@@ -185,7 +191,7 @@ for decay in decays {
         COOPER 1982                10.1016/0370-2693(82)90914-5
 <1.6E-6              pi+ --> mu- e+ e+ nu
     <1.6E-6              G(pi+ --> mu- e+ e+ nu)/G(total)
-        BARANOV 1991B              
+        BARANOV 1991B
         KORENCHENKO 1987
 ```
 
@@ -296,7 +302,7 @@ HEACOCK 2021 obtain constraints on non-Newtonian forces with strengths E18~< |al
 roves the results of HADDOCK 2018. These constraints do not place limits on the size of extra flat dimensions.
 
 LEE 2020                  (Torsion pendulum)
-LEE 2020 search for new forces probing a range of |alpha| ~=  and length scales R ~= 7 -- 90 mum. For delta = 1 the bound on R is 30 mum. See their Fig. 5 for details on the 
+LEE 2020 search for new forces probing a range of |alpha| ~=  and length scales R ~= 7 -- 90 mum. For delta = 1 the bound on R is 30 mum. See their Fig. 5 for details on the
 bound.
 
 TAN 2020A                 (Torsion pendulum)
@@ -309,11 +315,11 @@ BERGE 2018 uses results from the MICROSCOPE experiment to obtain constraints on 
 
 FAYET 2018A               (Space accelerometer)
 FAYET 2018A uses results from the MICROSCOPE experiment to obtain constraints on an EP-violating force possibly arising from a new U(1) gauge boson. For R ~>E7 m the limits a
-re |alpha| ~< a few E-13 to a few E-11 depending on the coupling, corresponding to |epsilon| ~< E-24 for the coupling of the new spin-1 or spin-0 mediator. These constraints 
+re |alpha| ~< a few E-13 to a few E-11 depending on the coupling, corresponding to |epsilon| ~< E-24 for the coupling of the new spin-1 or spin-0 mediator. These constraints
 do not place limits on the size of extra flat dimensions. This extends the results of FAYET 2018.
 
 KLIMCHITSKAYA 2017A       (Torsion oscillator)
-KLIMCHITSKAYA 2017A uses an experiment that measures the difference of Casimir forces to obtain bounds on non-Newtonian forces with strengths |alpha| ~= E5 -- E17 and length 
+KLIMCHITSKAYA 2017A uses an experiment that measures the difference of Casimir forces to obtain bounds on non-Newtonian forces with strengths |alpha| ~= E5 -- E17 and length
 scales R = 0.03 -- 10 mum. See their Fig. 3. These constraints do not place limits on the size of extra flat dimensions.
 
 XU 2013                   (Nuclei properties)
@@ -325,12 +331,12 @@ BEZERRA 2011 obtain constraints on non-Newtonian forces with strengths E11~< |al
 raints do not place limits on the size of extra flat dimensions.
 
 SUSHKOV 2011              (Torsion pendulum)
-SUSHKOV 2011 obtain improved limits on non-Newtonian forces with strengths E7~< |alpha| ~< E11 and length scales 0.4 mum < R < 4 mum (95% CL). See their Fig. 2. These bounds 
-do not place limits on the size of extra flat dimensions. However, a model dependent bound of M_{{*}} > 70 TeV is obtained assuming gauge bosons that couple to baryon number 
+SUSHKOV 2011 obtain improved limits on non-Newtonian forces with strengths E7~< |alpha| ~< E11 and length scales 0.4 mum < R < 4 mum (95% CL). See their Fig. 2. These bounds
+do not place limits on the size of extra flat dimensions. However, a model dependent bound of M_{{*}} > 70 TeV is obtained assuming gauge bosons that couple to baryon number
 also propagate in (4 + delta) dimensions.
 
 BEZERRA 2010              (Microcantilever)
-BEZERRA 2010 obtain improved constraints on non-Newtonian forces with strengths E19~< |alpha|~< E29 and length scales R = 1.6 -- 14 nm (95% CL). See their Fig. 1. This bound 
+BEZERRA 2010 obtain improved constraints on non-Newtonian forces with strengths E19~< |alpha|~< E29 and length scales R = 1.6 -- 14 nm (95% CL). See their Fig. 1. This bound
 does not place limits on the size of extra flat dimensions.
 
 MASUDA 2009               (Torsion pendulum)
@@ -342,7 +348,7 @@ GERACI 2008 obtain improved constraints on non-Newtonian forces with strengths |
 ot place limits on the size of extra flat dimensions.
 
 TRENKEL 2008              (Newton's constant)
-TRENKEL 2008 uses two independent measurements of Newton's constant G to constrain new forces with strength |alpha|~=E-4 and length scales R = 0.02 -- 1 m. See their Fig. 1. 
+TRENKEL 2008 uses two independent measurements of Newton's constant G to constrain new forces with strength |alpha|~=E-4 and length scales R = 0.02 -- 1 m. See their Fig. 1.
 This bound does not place limits on the size of extra flat dimensions.
 
 DECCA 2007A               (Torsion oscillator)
@@ -408,12 +414,12 @@ HOYLE 2001                 10.1103/PhysRevLett.86.1418
 HOSKINS 1985               10.1103/PhysRevD.32.3084
 ```
 
-Data is not always in a consistent form, although that is mostly due to the difficulty of having to account for so many different kinds of data entries. The search feature is intended to be more of a backend to a future CLI/TUI which will allow for these sorts of resources to be discovered in a more interactive manner rather than poking around at each `pdg_id` entry to see what references/footnotes/values it may relate to.
+Data is not always in a consistent form, although that is mostly due to the difficulty of having to account for so many different kinds of data entries. The search feature is intended to be more of a backend to a future TUI which will allow for these sorts of resources to be discovered in a more interactive manner rather than poking around at each `pdg_id` entry to see what references/footnotes/values it may relate to.
 
 ## Project Status
 Currently this is just a working example. I have some plans to expand the interface, but I'm open to outside contributions and ideas, please raise issues or make pull requests if interested. Some things I'm currently considering/working on:
 
-- A CLI/TUI interface for handling particle queries and raw data searches with better organization of footnotes and references.
+- A TUI interface for handling particle queries and raw data searches with better organization of footnotes and references.
 - Rust structs mirroring every table to provide a consistent backend
 - Incorporating the JSON data from [here](https://pdg.lbl.gov/current/PDGIdentifiers.json) and [here](https://pdg.lbl.gov/current/PDGIdentifiers-references.json) to add a bit of additional context to the database.
 - Automatically downloading and/or dynamically updating the database when a new version of the PDG is released.
