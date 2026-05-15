@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/denehoffman/pdg-rs/compare/pdg-rs-v0.1.1...pdg-rs-v0.1.2) (2026-05-15)
+
+
+### Features
+
+* Use a local cache for the database instead of embedding it ([a21793a](https://github.com/denehoffman/pdg-rs/commit/a21793ae9801de0f38e039317f54441cf29f296d))
+
 ## [0.1.1](https://github.com/denehoffman/pdg-rs/compare/pdg-rs-v0.1.0...pdg-rs-v0.1.1) (2026-05-15)
 
 
