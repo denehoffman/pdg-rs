@@ -49,13 +49,13 @@ fn main() -> PdgResult<()> {
 Most queries return `Option`s because we can't guarantee the search term will yield results (for instance, the "p-" doesn't exist, so asking for it should return `None`). The `PdgError` type is mostly reserved for errors encountered while parsing data from the sqlite database. Particle information is either directly available (charge, quantum numbers) or queryable (mass, lifetime). Most of these methods will produce unique data types (like a `Mass` struct) which contain additional information:
 
 ```rust
-let mass_texts = pdg.texts_for(&m_pi_plus.pdg_id)?;
+let mass_texts = pdg.texts_for(&m_pi_plus.pdgid)?;
 for text in mass_texts {
     if let Some(text) = text.text {
         println!("{}", text);
     }
 }
-let mass_measurements = pdg.measurements_for(&m_pi_plus.pdg_id)?;
+let mass_measurements = pdg.measurements_for(&m_pi_plus.pdgid)?;
 for measurement in mass_measurements {
     println!(
         "{:<20} {:<50}: {}",
@@ -72,12 +72,7 @@ for measurement in mass_measurements {
 ```
 This will output:
 ```text
-The most accurate charged pion mass measurements are based upon x-ray wavelength measurements for transitions in pi--mesonic atoms.  The observed line is the blend of three
- components, corresponding to different K-shell occupancies.  JECKELMANN 1994 revisits the occupancy question, with the conclusion that two sets of occupancy ratios, result
-ing in two different pion masses (Solutions A and B), are equally probable. We choose the higher Solution B since only this solution is consistent with a positive mass-squa
-red for the muon neutrino, given the precise muon momentum measurements now available (DAUM 1991, ASSAMAGAN 1994, and ASSAMAGAN 1996) for the decay of pions at rest.  Earli
-er mass determinations with pi-mesonic atoms may have used incorrect K-shell screening corrections.      Measurements with an error of >0.005 MeV have been omitted from thi
-s Listing.
+The most accurate charged pion mass measurements are based upon x-ray wavelength measurements for transitions in pi--mesonic atoms.  The observed line is the blend of three components, corresponding to different K-shell occupancies.  JECKELMANN 1994 revisits the occupancy question, with the conclusion that two sets of occupancy ratios, resulting in two different pion masses (Solutions A and B), are equally probable. We choose the higher Solution B since only this solution is consistent with a positive mass-squared for the muon neutrino, given the precise muon momentum measurements now available (DAUM 1991, ASSAMAGAN 1994, and ASSAMAGAN 1996) for the decay of pions at rest.  Earlier mass determinations with pi-mesonic atoms may have used incorrect K-shell screening corrections.      Measurements with an error of >0.005 MeV have been omitted from this Listing.
 DAUM 2019            10.1016/j.physletb.2019.07.027                    : 139.57021 +-0.00014 MeV
 TRASSINELLI 2016     10.1016/j.physletb.2016.06.025                    : 139.57077 +-0.00018 MeV
 LENZ 1998            10.1016/S0370-2693(97)01337-3                     : 139.57071 +-0.00053 MeV
@@ -252,131 +247,113 @@ There are lots of interesting ways to filter particle searches, such as selectin
 
 The database itself contains data beyond individual particle and decay measurements. A lot of this data is hard to classify, so it's often useful to use search queries. For example, if we wanted to learn about constraints on extra dimensions, we might do the following:
 ```rust
-let search_results = pdg.search_text("extra dimensions Newtonian")?;
-for result in search_results {
-    println!("{}\n", result.text);
-    let measurements = pdg.measurements_for(result.pdg_id)?;
-    for measurement in &measurements {
-        println!(
-            "{:<25} ({})",
-            measurement.reference.document_id,
-            measurement.comment.clone().unwrap_or_default()
-        );
-        for value in &measurement.values {
-            if value.value.is_some() {
-                println!("Value: {}", value);
-            }
-            for footnote in &measurement.footnotes {
-                println!("{}", footnote.text.clone().unwrap_or_default());
-            }
+let Some(result) = pdg
+    .search_text("extra dimensions Newtonian")?
+    .into_iter()
+    .find(|result| result.text.starts_with("This section includes"))
+else {
+    return Ok(());
+};
+println!("{}\n", result.text);
+let measurements = pdg.measurements_for(result.pdg_id)?;
+for measurement in &measurements {
+    println!(
+        "{:<25} ({})",
+        measurement.reference.document_id,
+        measurement.comment.clone().unwrap_or_default()
+    );
+    for value in &measurement.values {
+        if value.value.is_some() {
+            println!("Value: {}", value);
         }
-        println!();
+        for footnote in &measurement.footnotes {
+            println!("{}", footnote.text.clone().unwrap_or_default());
+        }
     }
-    println!("\nReferences:\n");
-    for measurement in measurements {
-        println!(
-            "{:<25}  {}",
-            measurement.reference.document_id,
-            measurement
-                .reference
-                .doi
-                .clone()
-                .or(measurement.reference.inspire_id.clone())
-                .or(measurement.reference.title.clone())
-                .unwrap_or_default()
-        );
-    }
+    println!();
+}
+println!("\nReferences:\n");
+for measurement in measurements {
+    println!(
+        "{:<25}  {}",
+        measurement.reference.document_id,
+        measurement
+            .reference
+            .doi
+            .clone()
+            .or(measurement.reference.inspire_id.clone())
+            .or(measurement.reference.title.clone())
+            .unwrap_or_default()
+    );
 }
 ```
 ```text
-This section includes limits on the size of extra dimensions from deviations in the Newtonian (1/r**2) gravitational force law at short distances. Deviations are parametrized
- by a gravitational potential of the form V = -(G m m'/r) [1 + alpha exp(-r/R)]. For delta toroidal extra dimensions of equal size, alpha = 8delta/3. Quoted bounds are for de
-lta = 2 unless otherwise noted.
+This section includes limits on the size of extra dimensions from deviations in the Newtonian (1/r**2) gravitational force law at short distances. Deviations are parametrized by a gravitational potential of the form V = -(G m m'/r) [1 + alpha exp(-r/R)]. For delta toroidal extra dimensions of equal size, alpha = 8delta/3. Quoted bounds are for delta = 2 unless otherwise noted.
 
 BLAKEMORE 2021            (Optical levitation)
-BLAKEMORE 2021 obtain constraints on non-Newtonian forces with strengths |alpha| ~> E8 and length scales R > 10 mum. See their Fig. 4 for more details including comparison wi
-th previous searches.
+BLAKEMORE 2021 obtain constraints on non-Newtonian forces with strengths |alpha| ~> E8 and length scales R > 10 mum. See their Fig. 4 for more details including comparison with previous searches.
 
 HEACOCK 2021              (Neutron scattering)
-HEACOCK 2021 obtain constraints on non-Newtonian forces with strengths E18~< |alpha|~< E25 and length scales R ~= 0.02 -- 10 nm. See their Figure 3 for more details. This imp
-roves the results of HADDOCK 2018. These constraints do not place limits on the size of extra flat dimensions.
+HEACOCK 2021 obtain constraints on non-Newtonian forces with strengths E18~< |alpha|~< E25 and length scales R ~= 0.02 -- 10 nm. See their Figure 3 for more details. This improves the results of HADDOCK 2018. These constraints do not place limits on the size of extra flat dimensions.
 
 LEE 2020                  (Torsion pendulum)
-LEE 2020 search for new forces probing a range of |alpha| ~=  and length scales R ~= 7 -- 90 mum. For delta = 1 the bound on R is 30 mum. See their Fig. 5 for details on the
-bound.
+LEE 2020 search for new forces probing a range of |alpha| ~=  and length scales R ~= 7 -- 90 mum. For delta = 1 the bound on R is 30 mum. See their Fig. 5 for details on the bound.
 
 TAN 2020A                 (Torsion pendulum)
 Value: <37 micrometers
 TAN 2020A search for new forces probing a range of |alpha| ~= 4E-3 -- 1E2 and length scales R ~= 40 -- 350 mum. See their Fig. 6 for details on the bound.
 
 BERGE 2018                (Space accelerometer)
-BERGE 2018 uses results from the MICROSCOPE experiment to obtain constraints on non-Newtonian forces with strengths E-11~< |alpha|~< E-7 and length scales R ~>E5 m. See their
- Figure 1 for more details. These constraints do not place limits on the size of extra flat dimensions.
+BERGE 2018 uses results from the MICROSCOPE experiment to obtain constraints on non-Newtonian forces with strengths E-11~< |alpha|~< E-7 and length scales R ~>E5 m. See their Figure 1 for more details. These constraints do not place limits on the size of extra flat dimensions.
 
 FAYET 2018A               (Space accelerometer)
-FAYET 2018A uses results from the MICROSCOPE experiment to obtain constraints on an EP-violating force possibly arising from a new U(1) gauge boson. For R ~>E7 m the limits a
-re |alpha| ~< a few E-13 to a few E-11 depending on the coupling, corresponding to |epsilon| ~< E-24 for the coupling of the new spin-1 or spin-0 mediator. These constraints
-do not place limits on the size of extra flat dimensions. This extends the results of FAYET 2018.
+FAYET 2018A uses results from the MICROSCOPE experiment to obtain constraints on an EP-violating force possibly arising from a new U(1) gauge boson. For R ~>E7 m the limits are |alpha| ~< a few E-13 to a few E-11 depending on the coupling, corresponding to |epsilon| ~< E-24 for the coupling of the new spin-1 or spin-0 mediator. These constraints do not place limits on the size of extra flat dimensions. This extends the results of FAYET 2018.
 
 KLIMCHITSKAYA 2017A       (Torsion oscillator)
-KLIMCHITSKAYA 2017A uses an experiment that measures the difference of Casimir forces to obtain bounds on non-Newtonian forces with strengths |alpha| ~= E5 -- E17 and length
-scales R = 0.03 -- 10 mum. See their Fig. 3. These constraints do not place limits on the size of extra flat dimensions.
+KLIMCHITSKAYA 2017A uses an experiment that measures the difference of Casimir forces to obtain bounds on non-Newtonian forces with strengths |alpha| ~= E5 -- E17 and length scales R = 0.03 -- 10 mum. See their Fig. 3. These constraints do not place limits on the size of extra flat dimensions.
 
 XU 2013                   (Nuclei properties)
-XU 2013 obtain constraints on non-Newtonian forces with strengths |alpha| ~= 10**34 -- 10**36 and length scales R ~= 1 -- 10 fm. See their Fig. 4 for more details. These cons
-traints do not place limits on the size of extra flat dimensions.
+XU 2013 obtain constraints on non-Newtonian forces with strengths |alpha| ~= 10**34 -- 10**36 and length scales R ~= 1 -- 10 fm. See their Fig. 4 for more details. These constraints do not place limits on the size of extra flat dimensions.
 
 BEZERRA 2011              (Torsion oscillator)
-BEZERRA 2011 obtain constraints on non-Newtonian forces with strengths E11~< |alpha|~< E18 and length scales R = 30 -- 1260 nm. See their Fig. 2 for more details. These const
-raints do not place limits on the size of extra flat dimensions.
+BEZERRA 2011 obtain constraints on non-Newtonian forces with strengths E11~< |alpha|~< E18 and length scales R = 30 -- 1260 nm. See their Fig. 2 for more details. These constraints do not place limits on the size of extra flat dimensions.
 
 SUSHKOV 2011              (Torsion pendulum)
-SUSHKOV 2011 obtain improved limits on non-Newtonian forces with strengths E7~< |alpha| ~< E11 and length scales 0.4 mum < R < 4 mum (95% CL). See their Fig. 2. These bounds
-do not place limits on the size of extra flat dimensions. However, a model dependent bound of M_{{*}} > 70 TeV is obtained assuming gauge bosons that couple to baryon number
-also propagate in (4 + delta) dimensions.
+SUSHKOV 2011 obtain improved limits on non-Newtonian forces with strengths E7~< |alpha| ~< E11 and length scales 0.4 mum < R < 4 mum (95% CL). See their Fig. 2. These bounds do not place limits on the size of extra flat dimensions. However, a model dependent bound of M_{{*}} > 70 TeV is obtained assuming gauge bosons that couple to baryon number also propagate in (4 + delta) dimensions.
 
 BEZERRA 2010              (Microcantilever)
-BEZERRA 2010 obtain improved constraints on non-Newtonian forces with strengths E19~< |alpha|~< E29 and length scales R = 1.6 -- 14 nm (95% CL). See their Fig. 1. This bound
-does not place limits on the size of extra flat dimensions.
+BEZERRA 2010 obtain improved constraints on non-Newtonian forces with strengths E19~< |alpha|~< E29 and length scales R = 1.6 -- 14 nm (95% CL). See their Fig. 1. This bound does not place limits on the size of extra flat dimensions.
 
 MASUDA 2009               (Torsion pendulum)
-MASUDA 2009 obtain improved constraints on non-Newtonian forces with strengths E9~<|alpha|~<E11 and length scales R = 1.0 -- 2.9 mum (95% CL). See their Fig. 3. This bound do
-es not place limits on the size of extra flat dimensions.
+MASUDA 2009 obtain improved constraints on non-Newtonian forces with strengths E9~<|alpha|~<E11 and length scales R = 1.0 -- 2.9 mum (95% CL). See their Fig. 3. This bound does not place limits on the size of extra flat dimensions.
 
 GERACI 2008               (Microcantilever)
-GERACI 2008 obtain improved constraints on non-Newtonian forces with strengths |alpha| > 14,000 and length scales R = 5 -- 15 micrometers. See their Fig. 9. This bound does n
-ot place limits on the size of extra flat dimensions.
+GERACI 2008 obtain improved constraints on non-Newtonian forces with strengths |alpha| > 14,000 and length scales R = 5 -- 15 micrometers. See their Fig. 9. This bound does not place limits on the size of extra flat dimensions.
 
 TRENKEL 2008              (Newton's constant)
 TRENKEL 2008 uses two independent measurements of Newton's constant G to constrain new forces with strength |alpha|~=E-4 and length scales R = 0.02 -- 1 m. See their Fig. 1.
 This bound does not place limits on the size of extra flat dimensions.
 
 DECCA 2007A               (Torsion oscillator)
-DECCA 2007A search for new forces and obtain bounds in the region with strengths |alpha| ~= E13 -- E18 and length scales R = 20 -- 86 nm. See their Fig. 6. This bound does no
-t place limits on the size of extra flat dimensions.
+DECCA 2007A search for new forces and obtain bounds in the region with strengths |alpha| ~= E13 -- E18 and length scales R = 20 -- 86 nm. See their Fig. 6. This bound does not place limits on the size of extra flat dimensions.
 
 KAPNER 2007               (Torsion pendulum)
 Value: <37 micrometers
-KAPNER 2007 search for new forces, probing a range of |alpha| ~= 10**-3 -- 10**5 and length scales R ~= 10 -- 1000 mum. For delta = 1 the bound on R is 44 mum. For delta = 2,
- the bound is expressed in terms of M_{{*}}, here translated to a bound on the radius. See their Fig. 6 for details on the bound.
+KAPNER 2007 search for new forces, probing a range of |alpha| ~= 10**-3 -- 10**5 and length scales R ~= 10 -- 1000 mum. For delta = 1 the bound on R is 44 mum. For delta = 2, the bound is expressed in terms of M_{{*}}, here translated to a bound on the radius. See their Fig. 6 for details on the bound.
 
 TU 2007                   (Torsion pendulum)
 Value: <47 micrometers
-TU 2007 search for new forces probing a range of |alpha| ~= E-1 -- E5 and length scales R ~= 20 -- 1000 mum. For delta = 1 the bound on R is 53 mum. See their Fig. 3 for deta
-ils on the bound.
+TU 2007 search for new forces probing a range of |alpha| ~= E-1 -- E5 and length scales R ~= 20 -- 1000 mum. For delta = 1 the bound on R is 53 mum. See their Fig. 3 for details on the bound.
 
 SMULLIN 2005              (Microcantilever)
-SMULLIN 2005 search for new forces, and obtain bounds in the region with strengths alpha ~= 10**3 -- 10**8 and length scales R = 6 -- 20 mum. See their Figs. 1 and 16 for det
-ails on the bound. This work does not place limits on the size of extra flat dimensions.
+SMULLIN 2005 search for new forces, and obtain bounds in the region with strengths alpha ~= 10**3 -- 10**8 and length scales R = 6 -- 20 mum. See their Figs. 1 and 16 for details on the bound. This work does not place limits on the size of extra flat dimensions.
 
 HOYLE 2004                (Torsion pendulum)
 Value: <130 micrometers
-HOYLE 2004 search for new forces, probing alpha down to 10**-2 and distances down to 10mum. Quoted bound on R is for delta = 2. For delta = 1, bound goes to 160 mum. See thei
-r Fig. 34 for details on the bound.
+HOYLE 2004 search for new forces, probing alpha down to 10**-2 and distances down to 10mum. Quoted bound on R is for delta = 2. For delta = 1, bound goes to 160 mum. See their Fig. 34 for details on the bound.
 
 CHIAVERINI 2003           (Microcantilever)
-CHIAVERINI 2003 search for new forces, probing alpha above 10**4 and lambda down to 3mum, finding no signal. See their Fig. 4 for details on the bound. This bound does not pl
-ace limits on the size of extra flat dimensions.
+CHIAVERINI 2003 search for new forces, probing alpha above 10**4 and lambda down to 3mum, finding no signal. See their Fig. 4 for details on the bound. This bound does not place limits on the size of extra flat dimensions.
 
 LONG 2003                 (Microcantilever)
 LONG 2003 search for new forces, probing alpha down to 3, and distances down to about 10mum. See their Fig. 4 for details on the bound.
@@ -386,8 +363,10 @@ Value: <190 micrometers
 HOYLE 2001 search for new forces, probing alpha down to 10**-2 and distances down to 20mum. See their Fig. 4 for details on the bound. The quoted bound is for alpha >= 3.
 
 HOSKINS 1985              (Torsion pendulum)
-HOSKINS 1985 search for new forces, probing distances down to 4 mm. See their Fig. 13 for details on the bound. This bound does not place limits on the size of extra flat dim
-ensions.
+HOSKINS 1985 search for new forces, probing distances down to 4 mm. See their Fig. 13 for details on the bound. This bound does not place limits on the size of extra flat dimensions.
+
+
+References:
 
 BLAKEMORE 2021             10.1103/PhysRevD.104.L061101
 HEACOCK 2021               10.1126/science.abc2794
