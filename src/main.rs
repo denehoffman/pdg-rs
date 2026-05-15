@@ -4,10 +4,9 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{ColumnConstraint, ContentArrangement, Width};
 use owo_colors::OwoColorize;
 use pdg_rs::{
-    AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Parity, ParticleClass,
+    table, AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Parity, ParticleClass,
     ParticleSearchQuery, ParticleType, Pdg, PdgError, PdgFootnote, PdgIdEntry, PdgMeasurement,
     PdgMeasurementValue, PdgParticle, PdgReference, PdgText, TextSearchResult, TextSearchSource,
-    table,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -27,6 +26,187 @@ enum CliError {
 }
 
 type CliResult<T> = Result<T, CliError>;
+
+trait PrettyString {
+    fn pretty_string(&self) -> String;
+}
+
+trait PrettyMeasurementValue: PrettyString {
+    fn pretty_detail_lines(&self) -> Vec<String>;
+}
+
+trait CliStringExt {
+    fn to_pdg_id_string(&self) -> String;
+    fn to_value_string(&self) -> String;
+    fn to_link_string(&self) -> String;
+    fn to_field_string(&self) -> String;
+}
+
+impl CliStringExt for str {
+    fn to_pdg_id_string(&self) -> String {
+        self.magenta().bold().to_string()
+    }
+
+    fn to_value_string(&self) -> String {
+        self.yellow().to_string()
+    }
+
+    fn to_link_string(&self) -> String {
+        self.blue().underline().to_string()
+    }
+
+    fn to_field_string(&self) -> String {
+        self.cyan().to_string()
+    }
+}
+
+impl PrettyString for DataEntry<'_> {
+    fn pretty_string(&self) -> String {
+        self.to_string().to_value_string()
+    }
+}
+
+impl PrettyString for PdgMeasurementValue {
+    fn pretty_string(&self) -> String {
+        let mut parts = vec![self.to_string().to_value_string()];
+        if let Some(column_name) = self
+            .column_name
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("{}", column_name.to_field_string()));
+        }
+        if let Some(limit_type) = self.limit_type {
+            parts.push(format!("{}", limit_type.to_string().to_field_string()));
+        }
+        if self.used_in_average {
+            parts.push("used in average".green().to_string());
+        }
+        if self.used_in_fit {
+            parts.push("used in fit".green().to_string());
+        }
+        parts.join(" | ")
+    }
+}
+
+impl PrettyMeasurementValue for PdgMeasurementValue {
+    fn pretty_detail_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        push_optional_line(
+            &mut lines,
+            "Value",
+            self.value.map(|value| value.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Error +",
+            self.error_positive.map(|value| value.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Error -",
+            self.error_negative.map(|value| value.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Stat error +",
+            self.stat_error_positive.map(|value| value.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Stat error -",
+            self.stat_error_negative.map(|value| value.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Syst error +",
+            self.syst_error_positive.map(|value| value.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Syst error -",
+            self.syst_error_negative.map(|value| value.to_string()),
+        );
+        push_optional_line(&mut lines, "Unit", self.unit_text.as_deref());
+        lines
+    }
+}
+
+impl PrettyString for PdgMeasurement {
+    fn pretty_string(&self) -> String {
+        let mut lines = vec![self.reference.document_id.trim().bold().to_string()];
+        push_optional_line(&mut lines, "Title", self.reference.title.as_deref());
+        push_optional_line(
+            &mut lines,
+            "Year",
+            self.reference.publication_year.map(|year| year.to_string()),
+        );
+        push_optional_line(
+            &mut lines,
+            "Publication",
+            self.reference.publication_name.as_deref(),
+        );
+        if let Some(doi) = &self.reference.doi {
+            push_optional_line(
+                &mut lines,
+                "DOI",
+                Some(format!("https://doi.org/{doi}").to_link_string()),
+            );
+        }
+        if let Some(inspire_id) = &self.reference.inspire_id {
+            push_optional_line(
+                &mut lines,
+                "INSPIRE",
+                Some(format!("https://inspirehep.net/literature/{inspire_id}").to_link_string()),
+            );
+        }
+        push_optional_line(&mut lines, "Technique", self.technique.as_deref());
+        push_optional_line(&mut lines, "Event count", self.event_count.as_deref());
+        push_optional_line(
+            &mut lines,
+            "Confidence level",
+            self.confidence_level.map(|value| value.to_string()),
+        );
+        push_optional_line(&mut lines, "Charge", self.charge.as_deref());
+        push_optional_line(&mut lines, "Comment", self.comment.as_deref());
+
+        if !self.values.is_empty() {
+            lines.push(format!("  {}", "Values:".to_field_string()));
+            for value in &self.values {
+                lines.push(format!("    {}", value.pretty_string()));
+                for detail in value.pretty_detail_lines() {
+                    lines.push(format!("      {detail}"));
+                }
+            }
+        }
+
+        if !self.footnotes.is_empty() {
+            lines.push(format!("  {}", "Footnotes:".to_field_string()));
+            for footnote in &self.footnotes {
+                let index = footnote
+                    .index
+                    .map(|index| index.to_string())
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "    [{}] {}",
+                    index,
+                    footnote.text.clone().unwrap_or_default()
+                ));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
+fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: Option<T>) {
+    if let Some(value) = value {
+        let value = value.to_string();
+        if !value.is_empty() {
+            lines.push(format!("  {}: {}", label.to_field_string(), value));
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -309,7 +489,7 @@ impl TryFrom<&DataEntry<'_>> for DataEntryDto {
             error_positive: entry.error_positive,
             error_negative: entry.error_negative,
             confidence_level: entry.confidence_level,
-            limit_type: entry.limit_type.map(|limit| limit.to_string()),
+            limit_type: entry.limit_type.map(|limit| limit.to_code().to_string()),
             in_summary_table: entry.in_summary_table,
             measurements: None,
             texts: None,
@@ -354,7 +534,9 @@ struct MeasurementDto {
     place: Option<String>,
     technique: Option<String>,
     charge: Option<String>,
+    changebar: bool,
     comment: Option<String>,
+    sort: isize,
     values: Vec<MeasurementValueDto>,
     footnotes: Vec<FootnoteDto>,
 }
@@ -369,7 +551,9 @@ impl From<&PdgMeasurement> for MeasurementDto {
             place: measurement.place.clone(),
             technique: measurement.technique.clone(),
             charge: measurement.charge.clone(),
+            changebar: measurement.changebar,
             comment: measurement.comment.clone(),
+            sort: measurement.sort,
             values: measurement
                 .values
                 .iter()
@@ -410,7 +594,13 @@ impl From<&PdgReference> for ReferenceDto {
 #[derive(Serialize)]
 struct MeasurementValueDto {
     column_name: Option<String>,
+    value_text: Option<String>,
+    unit_text: Option<String>,
     display: String,
+    display_value_text: Option<String>,
+    display_power_of_ten: Option<isize>,
+    display_in_percent: Option<bool>,
+    limit_type: Option<String>,
     value: Option<f64>,
     error_positive: Option<f64>,
     error_negative: Option<f64>,
@@ -420,13 +610,22 @@ struct MeasurementValueDto {
     syst_error_negative: Option<f64>,
     used_in_average: bool,
     used_in_fit: bool,
+    sort: isize,
 }
 
 impl From<&PdgMeasurementValue> for MeasurementValueDto {
     fn from(value: &PdgMeasurementValue) -> MeasurementValueDto {
         MeasurementValueDto {
             column_name: value.column_name.clone(),
+            value_text: value.value_text.clone(),
+            unit_text: value.unit_text.clone(),
             display: value.to_string(),
+            display_value_text: value.display_value_text.clone(),
+            display_power_of_ten: value.display_power_of_ten,
+            display_in_percent: value.display_in_percent,
+            limit_type: value
+                .limit_type
+                .map(|limit_type| limit_type.to_code().to_string()),
             value: value.value,
             error_positive: value.error_positive,
             error_negative: value.error_negative,
@@ -436,6 +635,7 @@ impl From<&PdgMeasurementValue> for MeasurementValueDto {
             syst_error_negative: value.syst_error_negative,
             used_in_average: value.used_in_average,
             used_in_fit: value.used_in_fit,
+            sort: value.sort,
         }
     }
 }
@@ -458,6 +658,7 @@ impl From<&TextSearchResult> for TextSearchDto {
             TextSearchSource::Text { text_type, sort } => {
                 ("text".to_string(), Some(text_type.clone()), Some(*sort))
             }
+            TextSearchSource::Footnote { index } => ("footnote".to_string(), None, Some(*index)),
         };
         TextSearchDto {
             pdg_id: result.pdg_id.clone(),
@@ -700,7 +901,7 @@ fn print_title(title: &str, texts: &[PdgText]) {
             lower: Width::Fixed(40),
             upper: Width::Fixed(100),
         }]);
-    table.add_row([title.to_string()]);
+    table.add_row([title.bold().to_string()]);
     for text in texts {
         if let Some(text) = &text.text {
             if !text.is_empty() {
@@ -713,11 +914,11 @@ fn print_title(title: &str, texts: &[PdgText]) {
 
 fn print_entry_summary(entry: &PdgIdEntry) {
     let mut headers = vec!["PDG ID".to_string(), "Type".to_string()];
-    let mut values = vec![entry.pdg_id.clone(), entry.data_type.to_string()];
+    let mut values = vec![entry.pdg_id.to_pdg_id_string(), entry.data_type.to_string()];
     if let Some(parent) = &entry.parent_pdg_id {
         if !parent.is_empty() {
             headers.push("Parent".to_string());
-            values.push(parent.clone());
+            values.push(parent.to_pdg_id_string());
         }
     }
     if let Some(mode) = entry.mode_number {
@@ -828,7 +1029,12 @@ fn print_headline_properties(particle: &PdgParticle<'_>) -> CliResult<()> {
     let mut table = table();
     table.set_header(["Property", "Value", "Source PDG ID", "Source"]);
     for row in rows {
-        table.add_row(row);
+        table.add_row([
+            row[0].clone(),
+            row[1].to_value_string(),
+            row[2].to_pdg_id_string(),
+            row[3].clone(),
+        ]);
     }
     println!("{table}");
     Ok(())
@@ -852,8 +1058,8 @@ fn print_data_entries(entries: &[DataEntry<'_>]) {
     ]);
     for entry in entries {
         table.add_row([
-            entry.pdgid.clone(),
-            entry.to_string(),
+            entry.pdgid.to_pdg_id_string(),
+            entry.pretty_string(),
             entry.value_type.to_string(),
             entry.comment.clone().unwrap_or_default(),
         ]);
@@ -874,7 +1080,7 @@ fn print_pdg_id_entries(entries: &[PdgIdEntry]) {
     ]);
     for entry in entries {
         table.add_row([
-            entry.pdg_id.clone(),
+            entry.pdg_id.to_pdg_id_string(),
             entry.data_type.to_string(),
             entry.description.clone(),
         ]);
@@ -1076,11 +1282,16 @@ fn print_branching_fractions(particle: &PdgParticle<'_>) -> CliResult<()> {
             .collect::<Vec<_>>()
             .join(", ");
         table.add_row([
-            decay.pdg_id.clone(),
+            decay.pdg_id.to_pdg_id_string(),
             decay.kind.to_string(),
-            decay.value.to_string(),
+            decay.value.to_string().to_value_string(),
             decay.description.clone(),
-            related_ids,
+            related_ids
+                .split(", ")
+                .filter(|pdg_id| !pdg_id.is_empty())
+                .map(CliStringExt::to_pdg_id_string)
+                .collect::<Vec<_>>()
+                .join(", "),
         ]);
     }
     println!("{table}");
@@ -1105,8 +1316,8 @@ fn print_branching_ratios(particle: &PdgParticle<'_>) -> CliResult<()> {
     ]);
     for ratio in &ratios {
         table.add_row([
-            ratio.pdg_id.clone(),
-            ratio.value.to_string(),
+            ratio.pdg_id.to_pdg_id_string(),
+            ratio.value.to_string().to_value_string(),
             ratio.description.clone(),
         ]);
     }
@@ -1142,7 +1353,7 @@ fn print_text_results(
             .map(|entry| entry.description)
             .unwrap_or_default();
         table.add_row([
-            result.pdg_id.clone(),
+            result.pdg_id.to_pdg_id_string(),
             title,
             if show_full_text {
                 result.text.clone()
@@ -1195,48 +1406,7 @@ fn print_measurements(measurements: &[PdgMeasurement]) {
         if index > 0 {
             println!();
         }
-        let values = measurement
-            .values
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("{}", measurement.reference.document_id.trim().bold());
-        if let Some(year) = measurement.reference.publication_year {
-            println!("  Year: {year}");
-        }
-        if let Some(publication) = &measurement.reference.publication_name {
-            println!("  Publication: {publication}");
-        }
-        if let Some(title) = &measurement.reference.title {
-            println!("  Title: {title}");
-        }
-        if let Some(doi) = &measurement.reference.doi {
-            println!("  DOI: https://doi.org/{doi}");
-        }
-        if let Some(inspire_id) = &measurement.reference.inspire_id {
-            println!("  INSPIRE: https://inspirehep.net/literature/{inspire_id}");
-        }
-        if !values.is_empty() {
-            println!("  Value(s): {values}");
-        }
-        if let Some(comment) = &measurement.comment {
-            println!("  Comment: {comment}");
-        }
-        if !measurement.footnotes.is_empty() {
-            println!("  Footnotes:");
-            for footnote in &measurement.footnotes {
-                let index = footnote
-                    .index
-                    .map(|index| index.to_string())
-                    .unwrap_or_default();
-                println!(
-                    "    [{}] {}",
-                    index,
-                    footnote.text.clone().unwrap_or_default()
-                );
-            }
-        }
+        println!("{}", measurement.pretty_string());
     }
 }
 

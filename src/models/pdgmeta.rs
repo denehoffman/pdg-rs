@@ -37,6 +37,7 @@ impl TryFrom<&Row<'_>> for PdgIdEntry {
 pub enum TextSearchSource {
     Description,
     Text { text_type: String, sort: isize },
+    Footnote { index: isize },
 }
 
 #[derive(Clone, Debug)]

@@ -130,6 +130,17 @@ fn search_text_prints_results() {
 }
 
 #[test]
+fn search_text_includes_footnotes() {
+    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    cmd.args(["search", "text", "normalisation decay", "--limit", "2"])
+        .assert()
+        .success()
+        .stdout(contains("S042P86"))
+        .stdout(contains("normalisation"))
+        .stdout(contains("B0 --> K*(892)0 tau+ mu-"));
+}
+
+#[test]
 fn show_finds_generic_pdgid_rows_with_labels() {
     let mut cmd = Command::cargo_bin("pdg").unwrap();
     cmd.args(["show", "S008245"])
@@ -179,15 +190,16 @@ fn show_measurements_use_reference_blocks() {
     .unwrap();
     assert!(stdout.contains("Measurements for M036R2"));
     assert!(stdout.contains("ABLIKIM 2022AH"));
-    assert!(stdout.contains("DOI: https://doi.org/"));
-    assert!(stdout.contains("INSPIRE: https://inspirehep.net/literature/"));
-    assert!(stdout.contains("Title:"));
-    assert!(stdout.contains("Value(s):"));
-    assert!(stdout.contains("  Footnotes:"));
+    assert!(stdout.contains("https://doi.org/"));
+    assert!(stdout.contains("https://inspirehep.net/literature/"));
+    assert!(stdout.contains("Title"));
+    assert!(stdout.contains("Technique"));
+    assert!(stdout.contains("Values"));
+    assert!(stdout.contains("Footnotes"));
     assert!(stdout.contains("[1] Using D_s()+"));
     assert!(!stdout.contains("Index"));
     let first_reference = stdout.find("ABLIKIM 2022AH").unwrap();
-    let first_footnote = stdout.find("  Footnotes:").unwrap();
+    let first_footnote = stdout.find("[1] Using D_s()+").unwrap();
     let next_reference = stdout.find("ABELE 1998").unwrap();
     assert!(first_reference < first_footnote);
     assert!(first_footnote < next_reference);
@@ -257,6 +269,31 @@ fn show_json_is_valid() {
 }
 
 #[test]
+fn show_json_includes_measurement_details() {
+    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let output = cmd
+        .args(["show", "M036R2", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let measurement = &value["measurements"][0];
+    let measurement_value = &measurement["values"][0];
+
+    assert_eq!(measurement["technique"], "BES3");
+    assert_eq!(measurement["place"], "U");
+    assert_eq!(measurement["changebar"], false);
+    assert_eq!(measurement_value["column_name"], "VALUE");
+    assert_eq!(measurement_value["value_text"], "0.137 +-0.036 +-0.042");
+    assert_eq!(measurement_value["used_in_average"], true);
+    assert_eq!(measurement_value["used_in_fit"], true);
+    assert!(measurement_value["stat_error_positive"].is_number());
+    assert!(measurement_value["syst_error_positive"].is_number());
+}
+
+#[test]
 fn search_particles_json_is_valid() {
     let mut cmd = Command::cargo_bin("pdg").unwrap();
     let output = cmd
@@ -298,6 +335,29 @@ fn search_text_json_is_valid() {
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert!(value.as_array().unwrap().len() <= 3);
+}
+
+#[test]
+fn search_text_json_includes_footnote_source() {
+    let mut cmd = Command::cargo_bin("pdg").unwrap();
+    let output = cmd
+        .args([
+            "search",
+            "text",
+            "normalisation decay",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value[0]["source"], "footnote");
+    assert_eq!(value[0]["pdg_id"], "S042P86");
 }
 
 #[test]

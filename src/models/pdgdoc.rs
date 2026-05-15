@@ -105,16 +105,27 @@ pub enum LimitType {
     RangeExclusion,
 }
 
+impl LimitType {
+    pub fn to_code(&self) -> &'static str {
+        match self {
+            Self::UpperLimit => "U",
+            Self::LowerLimit => "L",
+            Self::Range => "R",
+            Self::RangeExclusion => "X",
+        }
+    }
+}
+
 impl Display for LimitType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                Self::UpperLimit => "U",
-                Self::LowerLimit => "L",
-                Self::Range => "R",
-                Self::RangeExclusion => "X",
+                Self::UpperLimit => "Upper limit",
+                Self::LowerLimit => "Lower limit",
+                Self::Range => "Range",
+                Self::RangeExclusion => "Range exclusion",
             }
         )
     }

@@ -66,6 +66,10 @@ impl Pdg {
             INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
                 SELECT text, 'text', pdgid, type, sort
                 FROM pdgtext
+                WHERE text IS NOT NULL AND text != '';
+            INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
+                SELECT text, 'footnote', pdgid, NULL, footnote_index
+                FROM pdgfootnote
                 WHERE text IS NOT NULL AND text != '';",
         )?;
         Ok(())
@@ -139,23 +143,30 @@ impl Pdg {
                 let text = row.get::<_, String>(4)?;
                 let snippet = row.get::<_, String>(5)?;
                 let score = row.get::<_, f64>(6)?;
-                let (source, pdg_text) = if source == "text" {
-                    let text_type = text_type.unwrap_or_default();
-                    let sort = sort.unwrap_or_default();
-                    (
-                        TextSearchSource::Text {
-                            text_type: text_type.clone(),
-                            sort,
+                let (source, pdg_text) = match source.as_str() {
+                    "text" => {
+                        let text_type = text_type.unwrap_or_default();
+                        let sort = sort.unwrap_or_default();
+                        (
+                            TextSearchSource::Text {
+                                text_type: text_type.clone(),
+                                sort,
+                            },
+                            Some(PdgText {
+                                pdg_id: pdg_id.clone(),
+                                text_type,
+                                text: Some(text.clone()),
+                                sort,
+                            }),
+                        )
+                    }
+                    "footnote" => (
+                        TextSearchSource::Footnote {
+                            index: sort.unwrap_or_default(),
                         },
-                        Some(PdgText {
-                            pdg_id: pdg_id.clone(),
-                            text_type,
-                            text: Some(text.clone()),
-                            sort,
-                        }),
-                    )
-                } else {
-                    (TextSearchSource::Description, None)
+                        None,
+                    ),
+                    _ => (TextSearchSource::Description, None),
                 };
                 Ok(TextSearchResult {
                     pdg_id,
@@ -974,6 +985,22 @@ mod tests {
             result.pdg_text.as_ref().unwrap().text.as_deref(),
             Some(result.text.as_str())
         );
+    }
+
+    #[test]
+    fn text_search_finds_footnote_rows() {
+        let db = Pdg::open().unwrap();
+        let results = db.search_text("normalisation decay").unwrap();
+
+        let result = results
+            .iter()
+            .find(|result| matches!(result.source, TextSearchSource::Footnote { .. }))
+            .unwrap();
+
+        assert_eq!(result.pdg_id, "S042P86");
+        assert!(result.text.contains("normalisation decay"));
+        assert!(!result.snippet.is_empty());
+        assert!(result.pdg_text.is_none());
     }
 
     #[test]
