@@ -1,0 +1,32 @@
+---
+name: CI
+"on":
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  push:
+    branches:
+      - main
+  workflow_dispatch: ~
+jobs:
+  check:
+    name: "Check, lint, test, and document"
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: "rustfmt,clippy"
+      - run: cargo fmt --all --check
+      - run: cargo check --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-features
+      - run: cargo doc --all-features --no-deps
