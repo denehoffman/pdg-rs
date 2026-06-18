@@ -232,7 +232,7 @@ enum Commands {
     /// Look up any PDG database ID, such as S008 or S008245.
     Show(ShowCommand),
     /// Search particles or text.
-    Search(SearchCommand),
+    Search(Box<SearchCommand>),
     /// Manage the cached PDG database.
     Db(DbCommand),
     /// Reserved for the future terminal UI.
@@ -420,7 +420,7 @@ fn main() -> CliResult<()> {
     match command {
         Commands::Show(command) => run_show(&command.pdgid, command.output, cli.offline),
         Commands::Search(command) => match command.command {
-            SearchCommands::Particles(command) => run_particle(command, cli.offline),
+            SearchCommands::Particles(command) => run_particle(&command, cli.offline),
             SearchCommands::Text(command) => run_text(command, cli.offline),
         },
         Commands::Db(command) => run_db(&command),
@@ -479,7 +479,7 @@ fn run_db(command: &DbCommand) -> CliResult<()> {
     }
 }
 
-fn run_particle(command: ParticleCommand, offline: bool) -> CliResult<()> {
+fn run_particle(command: &ParticleCommand, offline: bool) -> CliResult<()> {
     if command.query.is_none() && !has_particle_filters(&command.filters) {
         ParticleCommand::command().print_help()?;
         println!();
