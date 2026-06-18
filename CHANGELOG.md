@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/denehoffman/pdg-rs/compare/pdg-rs-v0.1.2...pdg-rs-v0.1.3) (2026-06-18)
+
+
+### Bug Fixes
+
+* Allow negative mcids in searches and improve search results with aliases and better sorting ([a853f96](https://github.com/denehoffman/pdg-rs/commit/a853f964cae387d97d969d1c1d4682875f22cc24))
+* Clippy lints ([a37426f](https://github.com/denehoffman/pdg-rs/commit/a37426fa03320ed48630721bbd2663c48e16a734))
+
 ## [0.1.2](https://github.com/denehoffman/pdg-rs/compare/pdg-rs-v0.1.1...pdg-rs-v0.1.2) (2026-05-15)
 
 
