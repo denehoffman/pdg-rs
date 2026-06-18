@@ -89,6 +89,60 @@ fn search_particles_accepts_mcid_without_query() {
 }
 
 #[test]
+fn search_particles_accepts_negative_mcid_without_equals() {
+    let mut cmd = pdg_command();
+    cmd.args(["search", "particles", "--mcid", "-2212"])
+        .assert()
+        .success()
+        .stdout(contains("S016"))
+        .stdout(contains("pbar"))
+        .stdout(contains("-2212"))
+        .stdout(contains("Usage:").not());
+}
+
+#[test]
+fn search_particles_matches_common_aliases() {
+    let mut cmd = pdg_command();
+    cmd.args(["search", "particles", "proton"])
+        .assert()
+        .success()
+        .stdout(contains("S016"))
+        .stdout(contains("p"))
+        .stdout(contains("No particles found").not());
+}
+
+#[test]
+fn search_particles_ranks_exact_short_names_first() {
+    let mut cmd = pdg_command();
+    let stdout = String::from_utf8(
+        cmd.args(["search", "particles", "p", "--limit", "5"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    let proton = stdout.find("│ S016").unwrap();
+    let pentaquark = stdout.find("│ B171").unwrap_or(usize::MAX);
+    assert!(proton < pentaquark);
+}
+
+#[test]
+fn search_particles_filter_only_defaults_to_all_results() {
+    let mut cmd = pdg_command();
+    let output = cmd
+        .args(["search", "particles", "--charge", "+2", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(value.as_array().unwrap().len() > 20);
+}
+
+#[test]
 fn search_particles_accepts_decay_filters() {
     let mut cmd = pdg_command();
     cmd.args([

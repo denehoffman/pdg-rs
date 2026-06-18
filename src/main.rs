@@ -352,7 +352,7 @@ struct ParticleFilters {
     #[arg(long, value_enum, default_value_t = DecayExpansionArg::Inclusive)]
     decay_expansion: DecayExpansionArg,
     /// Look up a particle by Monte Carlo ID instead of name/search filters.
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     mcid: Option<isize>,
 }
 
@@ -362,8 +362,8 @@ struct ParticleOutput {
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
     /// Maximum number of results to print.
-    #[arg(long, default_value_t = 20)]
-    limit: usize,
+    #[arg(long)]
+    limit: Option<usize>,
     /// Print all matching results.
     #[arg(long)]
     all: bool,
@@ -489,11 +489,14 @@ fn run_particle(command: ParticleCommand, offline: bool) -> CliResult<()> {
     let db = open_pdg(offline)?;
     let mut particles: Vec<_> = if let Some(mcid) = command.filters.mcid {
         db.mcid(mcid)?.into_iter().collect()
+    } else if let Some(query) = command.query.as_deref() {
+        let particles = db.search_particles(build_query(None, &command.filters)?)?;
+        ranked_particle_matches(particles, query)
     } else {
-        db.search_particles(build_query(command.query, &command.filters)?)?
+        db.search_particles(build_query(None, &command.filters)?)?
     };
 
-    particles = apply_limit(particles, command.output.limit, command.output.all);
+    particles = apply_particle_limit(particles, command.query.is_some(), &command.output);
     output_particles(&particles, &command.output)
 }
 
@@ -924,6 +927,105 @@ fn apply_limit<T>(items: Vec<T>, limit: usize, all: bool) -> Vec<T> {
     }
 }
 
+fn apply_particle_limit<T>(items: Vec<T>, has_query: bool, output: &ParticleOutput) -> Vec<T> {
+    if output.all {
+        return items;
+    }
+
+    match output.limit {
+        Some(limit) => items.into_iter().take(limit).collect(),
+        None if has_query => items.into_iter().take(20).collect(),
+        None => items,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ParticleSearchRank {
+    score: u8,
+    name_len: usize,
+    original_index: usize,
+}
+
+fn ranked_particle_matches<'pdg>(
+    particles: Vec<PdgParticle<'pdg>>,
+    query: &str,
+) -> Vec<PdgParticle<'pdg>> {
+    let normalized_query = normalize_particle_search_text(query);
+    let mut matches = particles
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, particle)| {
+            particle_search_rank(&particle.name, &normalized_query, index)
+                .map(|rank| (rank, particle))
+        })
+        .collect::<Vec<_>>();
+
+    matches.sort_by(|(left, _), (right, _)| left.cmp(right));
+    matches.into_iter().map(|(_, particle)| particle).collect()
+}
+
+fn particle_search_rank(
+    particle_name: &str,
+    normalized_query: &str,
+    original_index: usize,
+) -> Option<ParticleSearchRank> {
+    if normalized_query.is_empty() {
+        return None;
+    }
+
+    let normalized_name = normalize_particle_search_text(particle_name);
+    let alias_match = particle_aliases_for_name(&normalized_name)
+        .iter()
+        .find_map(|alias| alias_match_score(alias, normalized_query));
+
+    let score = if normalized_name == normalized_query {
+        0
+    } else if let Some(score) = alias_match {
+        score
+    } else if normalized_name.starts_with(normalized_query) {
+        1
+    } else if normalized_name.contains(normalized_query) {
+        2
+    } else {
+        return None;
+    };
+
+    Some(ParticleSearchRank {
+        score,
+        name_len: normalized_name.len(),
+        original_index,
+    })
+}
+
+fn alias_match_score(alias: &str, normalized_query: &str) -> Option<u8> {
+    if alias == normalized_query {
+        Some(0)
+    } else if normalized_query.len() >= 2 && alias.starts_with(normalized_query) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn normalize_particle_search_text(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn particle_aliases_for_name(normalized_name: &str) -> &'static [&'static str] {
+    match normalized_name {
+        "p" => &["proton"],
+        "pbar" => &["antiproton", "anti-proton"],
+        "gamma" => &["photon"],
+        "e-" => &["electron"],
+        "e+" => &["positron"],
+        "mu-" => &["muon"],
+        "mu+" => &["antimuon", "anti-muon"],
+        "n" => &["neutron"],
+        "nbar" => &["antineutron", "anti-neutron"],
+        _ => &[],
+    }
+}
+
 const fn has_particle_filters(filters: &ParticleFilters) -> bool {
     filters.class.is_some()
         || filters.particle_type.is_some()
@@ -1238,4 +1340,36 @@ fn normalize(value: &str) -> String {
 
 fn is_missing(value: &str) -> bool {
     matches!(normalize(value).as_str(), "missing" | "none" | "null")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn particle_ranking_prefers_exact_short_name() {
+        let exact = particle_search_rank("p", "p", 0).unwrap();
+        let prefix = particle_search_rank("pbar", "p", 1).unwrap();
+        let substring = particle_search_rank("J/psi(1S)", "p", 2).unwrap();
+
+        assert!(exact < prefix);
+        assert!(prefix < substring);
+    }
+
+    #[test]
+    fn particle_ranking_matches_common_aliases() {
+        let proton = particle_search_rank("p", "proton", 0).unwrap();
+        let antiproton = particle_search_rank("pbar", "antiproton", 1).unwrap();
+
+        assert_eq!(proton.score, 0);
+        assert_eq!(antiproton.score, 0);
+    }
+
+    #[test]
+    fn particle_ranking_is_stable_for_ties() {
+        let first = particle_search_rank("pi+", "pi", 0).unwrap();
+        let second = particle_search_rank("pi-", "pi", 1).unwrap();
+
+        assert!(first < second);
+    }
 }
