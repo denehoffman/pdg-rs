@@ -88,7 +88,7 @@ impl Pdg {
         }
     }
 
-    fn entry_particles(&self, pdgid: &str) -> PdgResult<Vec<PdgParticle<'_>>> {
+    pub(crate) fn entry_particles(&self, pdgid: &str) -> PdgResult<Vec<PdgParticle<'_>>> {
         // The ID was resolved through `pdgid`, so the stored spelling is available here.
         let sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE pdgparticle.pdgid = ?1 ORDER BY name, mcid",

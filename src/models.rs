@@ -5,7 +5,7 @@ mod pdgparticle;
 pub use pdgparticle::{
     AngularMomentum, BranchingFraction, BranchingFractionKind, BranchingRatio, Charge,
     DecayProduct, Isospin, Parity, ParticleClass, ParticleProperty, ParticleType, PdgParticle,
-    PropertySource,
+    PropertySource, RelatedDataEntry,
 };
 
 mod pdgsearch;

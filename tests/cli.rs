@@ -210,14 +210,7 @@ fn db_path_prints_the_effective_override() {
 fn db_path_flag_overrides_environment_for_queries_and_status() {
     pdg_command()
         .env("PDG_RS_DB_PATH", "unused.sqlite")
-        .args([
-            "--offline",
-            "--db-path",
-            TEST_DB_PATH,
-            "show",
-            "pi+",
-            "--summary",
-        ])
+        .args(["--offline", "--db-path", TEST_DB_PATH, "show", "pi+"])
         .assert()
         .success()
         .stdout(contains("PDG edition 2025"));
@@ -656,7 +649,7 @@ fn show_resolves_particle_names_aliases_and_signed_mcids() {
         let result = pdg_command()
             .arg("show")
             .args(selector)
-            .args(["--summary", "--format", "json"])
+            .args(["--format", "json"])
             .assert()
             .success();
         let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
@@ -669,7 +662,7 @@ fn show_resolves_particle_names_aliases_and_signed_mcids() {
 fn show_lists_variants_for_shared_pdg_ids() {
     let names = ["rho(770)+", "rho(770)-", "rho(770)0"];
     let pretty = pdg_command()
-        .args(["show", "M009", "--summary"])
+        .args(["show", "M009"])
         .assert()
         .success()
         .stdout(contains("Particle variants"));
@@ -679,7 +672,7 @@ fn show_lists_variants_for_shared_pdg_ids() {
     }
 
     let result = pdg_command()
-        .args(["show", "M009", "--summary", "--format", "json"])
+        .args(["show", "M009", "--format", "json"])
         .assert()
         .success();
     let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
@@ -739,7 +732,7 @@ fn show_finds_generic_pdgid_rows_with_labels() {
 #[test]
 fn show_particle_promotes_section_properties_with_sources() {
     let mut cmd = pdg_command();
-    cmd.args(["show", "M036", "--summary"])
+    cmd.args(["show", "M036"])
         .assert()
         .success()
         .stdout(contains("Particle"))
@@ -755,7 +748,7 @@ fn show_particle_promotes_section_properties_with_sources() {
 #[test]
 fn show_particle_does_not_expand_related_branching_measurements() {
     let mut cmd = pdg_command();
-    cmd.args(["show", "M036"])
+    cmd.args(["show", "M036", "--view", "full"])
         .assert()
         .success()
         .stdout(contains("Related PDG IDs"))
@@ -766,7 +759,7 @@ fn show_particle_does_not_expand_related_branching_measurements() {
 fn show_measurements_use_reference_blocks() {
     let mut cmd = pdg_command();
     let stdout = String::from_utf8(
-        cmd.args(["show", "M036R2"])
+        cmd.args(["show", "M036R2", "--view", "measurements"])
             .assert()
             .success()
             .get_output()
@@ -794,7 +787,7 @@ fn show_measurements_use_reference_blocks() {
 #[test]
 fn show_particle_headline_includes_other_section_properties() {
     let mut cmd = pdg_command();
-    cmd.args(["show", "S008", "--summary"])
+    cmd.args(["show", "S008"])
         .assert()
         .success()
         .stdout(contains("Properties"))
@@ -804,9 +797,9 @@ fn show_particle_headline_includes_other_section_properties() {
 }
 
 #[test]
-fn show_summary_omits_full_sections() {
+fn show_overview_is_the_default_and_omits_full_sections() {
     let mut cmd = pdg_command();
-    cmd.args(["show", "M036", "--summary"])
+    cmd.args(["show", "M036"])
         .assert()
         .success()
         .stdout(contains("Branching fractions").not())
@@ -837,6 +830,101 @@ fn show_related_details_expands_related_measurements() {
         .success()
         .stdout(contains("Related details"))
         .stdout(contains("Measurements for M036R2"));
+
+    let result = pdg_command()
+        .args(["show", "M036", "--related-details", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(value["view"], "full");
+    let related = value["related_details"].as_array().unwrap();
+    let ratio = related
+        .iter()
+        .find(|row| row["entry"]["pdgid"] == "M036R2")
+        .unwrap();
+    assert_eq!(ratio["measurements"][0]["technique"], "BES3");
+}
+
+#[test]
+fn show_mass_view_keeps_only_mass_and_its_source() {
+    let mut cmd = pdg_command();
+    cmd.args(["show", "M036", "--view", "mass"])
+        .assert()
+        .success()
+        .stdout(contains("M036MX"))
+        .stdout(contains("M036W1").not())
+        .stdout(contains("\x1b[").not());
+    let result = pdg_command()
+        .args(["show", "M036", "--view", "mass", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(value["view"], "mass");
+    let properties = value["properties"].as_array().unwrap();
+    assert_eq!(properties.len(), 1);
+    assert_eq!(properties[0]["value"]["pdgid"], "M036MX");
+    assert_eq!(properties[0]["source"]["kind"], "section");
+    assert!(value.get("measurements").is_none());
+}
+
+#[test]
+fn show_decay_view_includes_recorded_channels() {
+    pdg_command()
+        .args(["show", "pi+", "--view", "decays"])
+        .assert()
+        .success()
+        .stdout(contains("Branching fractions"))
+        .stdout(contains("S008.1"))
+        .stdout(contains("Measurements for").not());
+    let result = pdg_command()
+        .args(["show", "pi+", "--view", "decays", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    let channels = value["branching_fractions"].as_array().unwrap();
+    let channel = channels
+        .iter()
+        .find(|row| row["pdgid"] == "S008.1")
+        .unwrap();
+    assert!(
+        channel["products"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|product| product["name"] == "mu+")
+    );
+    assert!(value.get("properties").is_none());
+}
+
+#[test]
+fn show_evidence_views_find_property_measurements_and_unique_references() {
+    pdg_command()
+        .args(["show", "pi+", "--view", "measurements"])
+        .assert()
+        .success()
+        .stdout(contains("Measurements for S008M"))
+        .stdout(contains("\x1b[").not());
+    pdg_command()
+        .args(["show", "M036R2", "--view", "references"])
+        .assert()
+        .success()
+        .stdout(contains("ABLIKIM 2022AH"))
+        .stdout(contains("Values:").not());
+    let result = pdg_command()
+        .args(["show", "pi+", "--view", "references", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(value["view"], "references");
+    let references = value["references"].as_array().unwrap();
+    let mut document_ids = std::collections::HashSet::new();
+    assert!(!references.is_empty());
+    assert!(
+        references
+            .iter()
+            .all(|reference| { document_ids.insert(reference["document_id"].as_str().unwrap()) })
+    );
+    assert!(value.get("measurements").is_none());
 }
 
 #[test]
@@ -850,6 +938,7 @@ fn show_json_is_valid() {
         .stdout
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["view"], "overview");
     assert_eq!(value["entry"]["pdgid"], "S009");
     assert_eq!(value["particle"]["mcid"], 111);
 }
@@ -858,7 +947,14 @@ fn show_json_is_valid() {
 fn show_json_includes_measurement_details() {
     let mut cmd = pdg_command();
     let output = cmd
-        .args(["show", "M036R2", "--format", "json"])
+        .args([
+            "show",
+            "M036R2",
+            "--view",
+            "measurements",
+            "--format",
+            "json",
+        ])
         .assert()
         .success()
         .get_output()

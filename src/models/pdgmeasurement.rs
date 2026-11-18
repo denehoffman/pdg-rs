@@ -21,6 +21,19 @@ pub struct PdgReference {
     pub title: Option<String>,
 }
 
+impl PdgReference {
+    pub(crate) fn from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<Self> {
+        Ok(Self {
+            document_id: row.get(offset)?,
+            publication_name: row.get(offset + 1)?,
+            publication_year: row.get(offset + 2)?,
+            doi: row.get(offset + 3)?,
+            inspire_id: row.get(offset + 4)?,
+            title: row.get(offset + 5)?,
+        })
+    }
+}
+
 /// Experimental or observational measurement supporting a PDG data entry.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgMeasurement {
@@ -67,14 +80,7 @@ impl TryFrom<&Row<'_>> for PdgMeasurement {
             changebar: row.get(7)?,
             comment: row.get(8)?,
             sort: row.get(9)?,
-            reference: PdgReference {
-                document_id: row.get(10)?,
-                publication_name: row.get(11)?,
-                publication_year: row.get(12)?,
-                doi: row.get(13)?,
-                inspire_id: row.get(14)?,
-                title: row.get(15)?,
-            },
+            reference: PdgReference::from_row(row, 10)?,
             values: Vec::new(),
             footnotes: Vec::new(),
         })

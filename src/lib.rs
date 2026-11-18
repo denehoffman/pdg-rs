@@ -8,12 +8,14 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
 
 mod database;
+mod entry_details;
 mod lookup;
 mod models;
 mod particle_details;
 mod particle_search;
 mod text_search;
 pub use database::PdgDatabaseInfo;
+pub use entry_details::{EntryContent, EntryDetailView, EntryDetails, RelatedEntryDetails};
 pub use lookup::{Lookup, LookupSelector};
 pub use models::*;
 pub use particle_details::{

@@ -2,14 +2,15 @@
 
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use pdg_rs::{
-    DataEntry, DataType, OwnedDecayChannelMatch, ParticleFilterHit, ParticleSummary,
-    PdgDatabaseInfo, PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle,
-    PdgReference, PdgResult, PdgText, TextSearchCorrection, TextSearchParent, TextSearchResult,
-    TextSearchSource,
+    BranchingFraction, BranchingRatio, DataEntry, DataType, DataValue, DecayProductSummary,
+    EntryContent, EntryDetails, OwnedDecayChannelMatch, ParticleFilterHit, ParticlePropertyDetail,
+    ParticleSummary, Pdg, PdgDatabaseInfo, PdgFootnote, PdgIdEntry, PdgMeasurement,
+    PdgMeasurementValue, PdgParticle, PdgReference, PdgResult, PdgText, RelatedDataEntry,
+    TextSearchCorrection, TextSearchParent, TextSearchResult, TextSearchSource,
 };
 use serde::Serialize;
 
-use crate::{CliError, CliResult};
+use crate::{CliError, CliResult, ShowView};
 
 #[derive(Serialize)]
 pub(crate) struct ParticleDto {
@@ -21,7 +22,7 @@ pub(crate) struct ParticleDto {
     related_particles: Option<Vec<ParticleSummaryDto>>,
     branching_fractions: Option<Vec<BranchingFractionDto>>,
     branching_ratios: Option<Vec<BranchingRatioDto>>,
-    texts: Option<Vec<TextDto>>,
+    texts: Option<Vec<PdgText>>,
     footnotes: Option<Vec<FootnoteDto>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     matching_decays: Vec<OwnedDecayChannelMatch>,
@@ -97,7 +98,7 @@ pub(crate) struct DataEntryDto {
     limit_type: Option<String>,
     in_summary_table: bool,
     measurements: Option<Vec<MeasurementDto>>,
-    texts: Option<Vec<TextDto>>,
+    texts: Option<Vec<PdgText>>,
     footnotes: Option<Vec<FootnoteDto>>,
 }
 
@@ -131,8 +132,31 @@ struct BranchingFractionDto {
     description: String,
     mode_number: Option<u32>,
     kind: String,
-    value: DataEntryDto,
+    value: DataValue,
+    products: Vec<DecayProductSummary>,
     related_data: Vec<RelatedDataDto>,
+}
+
+impl From<&BranchingFraction<'_>> for BranchingFractionDto {
+    fn from(decay: &BranchingFraction<'_>) -> Self {
+        Self {
+            pdgid: decay.pdgid.clone(),
+            description: decay.description.clone(),
+            mode_number: decay.mode_number,
+            kind: decay.kind.to_string(),
+            value: decay.value.clone().into(),
+            products: decay
+                .products
+                .iter()
+                .map(DecayProductSummary::from)
+                .collect(),
+            related_data: decay
+                .related_data
+                .iter()
+                .map(RelatedDataDto::from)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -140,16 +164,39 @@ struct BranchingRatioDto {
     pdgid: String,
     description: String,
     mode_number: Option<u32>,
-    value: DataEntryDto,
+    value: DataValue,
+}
+
+impl From<&BranchingRatio<'_>> for BranchingRatioDto {
+    fn from(ratio: &BranchingRatio<'_>) -> Self {
+        Self {
+            pdgid: ratio.pdgid.clone(),
+            description: ratio.description.clone(),
+            mode_number: ratio.mode_number,
+            value: ratio.value.clone().into(),
+        }
+    }
 }
 
 #[derive(Serialize)]
 struct RelatedDataDto {
     pdgid: String,
     description: String,
-    data_type: String,
+    data_type: DataType,
     mode_number: Option<u32>,
-    value: DataEntryDto,
+    value: DataValue,
+}
+
+impl From<&RelatedDataEntry<'_>> for RelatedDataDto {
+    fn from(entry: &RelatedDataEntry<'_>) -> Self {
+        Self {
+            pdgid: entry.pdgid.clone(),
+            description: entry.description.clone(),
+            data_type: entry.data_type,
+            mode_number: entry.mode_number,
+            value: entry.value.clone().into(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -307,25 +354,6 @@ impl From<&TextSearchResult> for TextSearchDto {
 }
 
 #[derive(Serialize)]
-pub(crate) struct TextDto {
-    pdgid: String,
-    text_type: String,
-    text: Option<String>,
-    sort: isize,
-}
-
-impl From<&PdgText> for TextDto {
-    fn from(text: &PdgText) -> Self {
-        Self {
-            pdgid: text.pdgid.clone(),
-            text_type: text.text_type.clone(),
-            text: text.text.clone(),
-            sort: text.sort,
-        }
-    }
-}
-
-#[derive(Serialize)]
 pub(crate) struct FootnoteDto {
     pdgid: Option<String>,
     index: Option<isize>,
@@ -345,48 +373,117 @@ impl From<&PdgFootnote> for FootnoteDto {
 }
 
 #[derive(Serialize)]
-pub(crate) struct ShowDto {
-    pub(crate) edition: String,
-    pub(crate) database: PdgDatabaseInfo,
-    pub(crate) entry: PdgIdEntryDto,
-    pub(crate) particle: Option<ParticleDto>,
+pub(crate) struct ShowDto<'a> {
+    view: ShowView,
+    edition: &'a str,
+    database: &'a PdgDatabaseInfo,
+    entry: &'a PdgIdEntry,
+    particle: Option<ParticleSummary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) variants: Vec<ParticleDto>,
-    pub(crate) data: Vec<DataEntryDto>,
-    pub(crate) children: Vec<PdgIdEntryDto>,
-    pub(crate) related_entries: Vec<PdgIdEntryDto>,
-    pub(crate) texts: Option<Vec<TextDto>>,
-    pub(crate) footnotes: Option<Vec<FootnoteDto>>,
-    pub(crate) measurements: Option<Vec<MeasurementDto>>,
+    variants: Vec<ParticleSummary>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    properties: &'a [ParticlePropertyDetail],
+    #[serde(flatten)]
+    content: EntryContentDto<'a>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    branching_fractions: Vec<BranchingFractionDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    branching_ratios: Vec<BranchingRatioDto>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    references: &'a [PdgReference],
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    children: &'a [PdgIdEntry],
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    related_entries: &'a [PdgIdEntry],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related_particles: Vec<ParticleSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related_details: Vec<RelatedEntryDto<'a>>,
+}
+
+impl<'a> ShowDto<'a> {
+    pub(crate) fn new(
+        db: &'a Pdg,
+        entry: &'a PdgIdEntry,
+        particles: &[PdgParticle<'_>],
+        view: ShowView,
+        details: &'a EntryDetails<'_>,
+    ) -> Self {
+        let (particle, variants) = match particles {
+            [particle] => (Some(ParticleSummary::from(particle)), Vec::new()),
+            _ => (None, particles.iter().map(ParticleSummary::from).collect()),
+        };
+        Self {
+            view,
+            edition: db.edition(),
+            database: db.database_info(),
+            entry,
+            particle,
+            variants,
+            properties: &details.properties,
+            content: EntryContentDto::from(&details.content),
+            branching_fractions: details
+                .branching_fractions
+                .iter()
+                .map(BranchingFractionDto::from)
+                .collect(),
+            branching_ratios: details
+                .branching_ratios
+                .iter()
+                .map(BranchingRatioDto::from)
+                .collect(),
+            references: &details.references,
+            children: &details.children,
+            related_entries: &details.related_entries,
+            related_particles: details
+                .related_particles
+                .iter()
+                .map(ParticleSummary::from)
+                .collect(),
+            related_details: details
+                .related_details
+                .iter()
+                .map(|related| RelatedEntryDto {
+                    entry: &related.entry,
+                    content: EntryContentDto::from(&related.content),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
-pub(crate) struct PdgIdEntryDto {
-    id: isize,
-    pdgid: String,
-    parent_pdgid: Option<String>,
-    description: String,
-    mode_number: Option<isize>,
-    data_type: String,
-    flags: String,
-    year_added: Option<isize>,
-    sort: isize,
+struct EntryContentDto<'a> {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    data: Vec<DataValue>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    texts: &'a [PdgText],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    measurements: Vec<MeasurementDto>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    footnotes: &'a [PdgFootnote],
 }
 
-impl From<&PdgIdEntry> for PdgIdEntryDto {
-    fn from(entry: &PdgIdEntry) -> Self {
+impl<'a> From<&'a EntryContent<'_>> for EntryContentDto<'a> {
+    fn from(content: &'a EntryContent<'_>) -> Self {
         Self {
-            id: entry.id,
-            pdgid: entry.pdgid.clone(),
-            parent_pdgid: entry.parent_pdgid.clone(),
-            description: entry.description.clone(),
-            mode_number: entry.mode_number,
-            data_type: entry.data_type.to_code().to_string(),
-            flags: entry.flags.clone(),
-            year_added: entry.year_added,
-            sort: entry.sort,
+            data: content.data.iter().cloned().map(DataValue::from).collect(),
+            texts: &content.texts,
+            measurements: content
+                .measurements
+                .iter()
+                .map(MeasurementDto::from)
+                .collect(),
+            footnotes: &content.footnotes,
         }
     }
+}
+
+#[derive(Serialize)]
+struct RelatedEntryDto<'a> {
+    entry: &'a PdgIdEntry,
+    #[serde(flatten)]
+    content: EntryContentDto<'a>,
 }
 
 pub(crate) fn table() -> Table {
