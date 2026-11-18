@@ -42,6 +42,8 @@ Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime
 
 Decay filters accept exact aliases and common particle notation in their default inclusive mode. `KS`, `Kₛ⁰`, and `K(S)0` resolve to the same neutral kaon before PDG family expansion. `--decay-expansion literal` compares the product spellings as recorded in the database.
 
+Decay-filtered results list the matching PDG channels with their IDs and recorded descriptions. A `KS,KS` search can match a channel listed as `K Kbar` through family expansion. Use `pdg show M003.1` to inspect that listing. JSON includes a `matching_decays` array with the channel description, product names, multiplicities, and which state filters matched. In Rust, `Pdg::search_particle_hits` and `Pdg::find_particles` expose the same matches.
+
 Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
 Pass `--db-path FILE` to open an existing local SQLite database read-only. The flag takes precedence over `PDG_RS_DB_PATH`. With neither override, `pdg` uses the pinned database in the cache, which you can relocate with `PDG_RS_CACHE_DIR`.

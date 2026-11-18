@@ -18,9 +18,9 @@ use comfy_table::{ColumnConstraint, ContentArrangement, Width};
 use owo_colors::OwoColorize;
 use pdg_rs::{
     AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Lookup, LookupSelector,
-    Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg, PdgError, PdgFootnote,
-    PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgText, TextSearchResult,
-    TextSearchSource,
+    Parity, ParticleClass, ParticleFilterHit, ParticleSearchQuery, ParticleType, Pdg, PdgError,
+    PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgText,
+    TextSearchResult, TextSearchSource,
 };
 use thiserror::Error;
 
@@ -232,7 +232,7 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
     name = "pdg",
     version,
     about = "Search the Particle Data Group database",
-    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --decays-to 'K(S)0,K(S)0' --charge 0\n  pdg find --text 'form factors'\n  pdg show 'pi+'\n  pdg completions zsh"
+    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --decays-to KS,KS --charge 0\n  pdg find --text 'form factors'\n  pdg show 'pi+'\n  pdg completions zsh"
 )]
 struct Cli {
     #[command(flatten)]
@@ -635,20 +635,23 @@ fn run_find(command: &FindCommand, database: &DatabaseOptions) -> CliResult<()> 
 
     let filters = build_query(&command.filters)?;
     let db = open_pdg(database, command.edition.as_deref())?;
-    let mut particles = if let Some(query) = query {
+    let mut hits = if let Some(query) = query {
         db.find_particles(query, filters)?
             .into_iter()
-            .map(|hit| hit.particle)
+            .map(|hit| ParticleFilterHit {
+                particle: hit.particle,
+                matching_decays: hit.matching_decays,
+            })
             .collect()
     } else {
-        db.search_particles(filters)?
+        db.search_particle_hits(filters)?
     };
 
     let default_limit = query.is_some().then_some(DEFAULT_SEARCH_LIMIT);
     if let Some(limit) = command.output.result_limit(default_limit) {
-        particles.truncate(limit);
+        hits.truncate(limit);
     }
-    output_particles(&particles, &command.output)
+    output_particles(&hits, &command.output)
 }
 
 fn run_text(
@@ -740,11 +743,11 @@ fn particle_choice(particle: &PdgParticle<'_>) -> String {
     format!("  {} (PDG ID {}{mcid})", particle.name, particle.pdgid)
 }
 
-fn output_particles(particles: &[PdgParticle<'_>], output: &SearchOutput) -> CliResult<()> {
+fn output_particles(hits: &[ParticleFilterHit<'_>], output: &SearchOutput) -> CliResult<()> {
     match output.format {
-        OutputFormat::Pretty => print_particles(particles),
+        OutputFormat::Pretty => print_particle_hits(hits),
         OutputFormat::Json => {
-            let dtos = particles
+            let dtos = hits
                 .iter()
                 .map(ParticleDto::try_from)
                 .collect::<CliResult<Vec<_>>>()?;
@@ -1173,14 +1176,37 @@ const fn has_particle_filters(filters: &ParticleFilters) -> bool {
         || filters.mcid.is_some()
 }
 
-fn print_particles(particles: &[PdgParticle<'_>]) -> CliResult<()> {
-    if particles.is_empty() {
+fn print_particle_hits(hits: &[ParticleFilterHit<'_>]) -> CliResult<()> {
+    if hits.is_empty() {
         println!("{}", "No particles found.".yellow());
         return Ok(());
     }
 
-    let table = particle_table(particles, true)?;
-    println!("{table}");
+    println!(
+        "{}",
+        particle_table(hits.iter().map(|hit| &hit.particle), true)?
+    );
+    if hits.iter().any(|hit| !hit.matching_decays.is_empty()) {
+        println!("Matching PDG decay channels");
+        let mut channels = table();
+        channels.set_header(["Particle", "PDG ID", "Matched states", "Recorded channel"]);
+        for hit in hits {
+            for channel in &hit.matching_decays {
+                let states = match (channel.matched_initial_states, channel.matched_final_states) {
+                    (true, true) => "Initial and final",
+                    (true, false) => "Initial",
+                    _ => "Final",
+                };
+                channels.add_row([
+                    hit.particle.name.as_str(),
+                    channel.pdgid.as_str(),
+                    states,
+                    channel.description.as_str(),
+                ]);
+            }
+        }
+        println!("{channels}");
+    }
     Ok(())
 }
 

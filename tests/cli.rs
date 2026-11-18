@@ -527,16 +527,20 @@ fn find_particles_accepts_decay_filters() {
     let mut cmd = pdg_command();
     cmd.args([
         "find",
+        "f_0(980)0",
         "--decays-to",
-        "K(S)0,K(S)0",
+        "KS,KS",
         "--charge",
         "0",
         "--limit",
-        "3",
+        "1",
     ])
     .assert()
     .success()
-    .stdout(contains("Meson"));
+    .stdout(contains("Meson"))
+    .stdout(contains("Matching PDG decay channels"))
+    .stdout(contains("M003.1"))
+    .stdout(contains("f_0(980) --> K Kbar"));
 }
 
 #[test]
@@ -564,7 +568,22 @@ fn find_decay_filters_accept_neutral_kaon_aliases() {
             .clone()
     };
     let canonical = query("K(S)0,K(S)0");
-    assert_ne!(canonical, b"[]\n");
+    let results: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    let particle = results
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|particle| particle["name"] == "f_0(980)0")
+        .unwrap();
+    let channel = &particle["matching_decays"][0];
+    assert_eq!(channel["pdgid"], "M003.1");
+    assert_eq!(channel["description"], "f_0(980) --> K Kbar");
+    assert_eq!(channel["matched_initial_states"], false);
+    assert_eq!(channel["matched_final_states"], true);
+    let products = channel["products"].as_array().unwrap();
+    assert!(products.iter().any(|product| {
+        product["name"] == "Kbar" && product["is_outgoing"] == true && product["multiplier"] == 1
+    }));
     assert_eq!(query("KS,KS"), canonical);
     assert_eq!(query("Kₛ⁰, KS"), canonical);
 }
@@ -872,6 +891,7 @@ fn find_particles_json_is_valid() {
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value[0]["pdgid"], "S008");
+    assert!(value[0].get("matching_decays").is_none());
 }
 
 #[test]

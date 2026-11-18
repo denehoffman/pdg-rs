@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::{ParticleSearchQuery, Pdg, PdgParticle, PdgResult};
+use crate::{
+    DecayChannelMatch, ParticleFilterHit, ParticleSearchQuery, Pdg, PdgParticle, PdgResult,
+};
 
 /// How a particle's name or alias matched a ranked search query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,6 +29,8 @@ pub struct ParticleSearchHit<'pdg> {
     pub kind: ParticleMatchKind,
     /// The original spelling of the canonical name or alias that matched.
     pub matched_name: String,
+    /// Matching PDG channels, empty for a search without decay filters.
+    pub matching_decays: Vec<DecayChannelMatch<'pdg>>,
 }
 
 impl Pdg {
@@ -64,15 +68,19 @@ impl Pdg {
             filters.validate_ranges()?;
             return Ok(Vec::new());
         }
-        let particles = self.search_particles(filters)?;
-        if particles.is_empty() {
+        let filtered = self.search_particle_hits(filters)?;
+        if filtered.is_empty() {
             return Ok(Vec::new());
         }
 
         let aliases = self.particle_aliases()?;
-        let mut hits = particles
+        let mut hits = filtered
             .into_iter()
-            .filter_map(|particle| {
+            .filter_map(|hit| {
+                let ParticleFilterHit {
+                    particle,
+                    matching_decays,
+                } = hit;
                 let aliases = aliases_for_name(&aliases, &particle.name);
                 let (kind, matched_name) = std::iter::once((particle.name.as_str(), false))
                     .chain(aliases.map(|alias| (alias, true)))
@@ -86,6 +94,7 @@ impl Pdg {
                     particle,
                     kind,
                     matched_name,
+                    matching_decays,
                 })
             })
             .collect::<Vec<_>>();

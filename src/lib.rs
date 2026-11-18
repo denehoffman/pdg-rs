@@ -413,6 +413,24 @@ impl Pdg {
     ///
     /// Returns an error if a property range is invalid or a database query fails.
     pub fn search_particles(&self, query: ParticleSearchQuery) -> PdgResult<Vec<PdgParticle<'_>>> {
+        Ok(self
+            .search_particle_hits(query)?
+            .into_iter()
+            .map(|hit| hit.particle)
+            .collect())
+    }
+
+    /// Searches for particles and returns the recorded channels that matched the decay filters.
+    ///
+    /// Initial- and final-state filters can match different channels under the same particle
+    /// entry. Channel descriptions and product names retain the database's spelling.
+    ///
+    /// # Errors
+    /// Returns an error if a property range is invalid or a database query fails.
+    pub fn search_particle_hits(
+        &self,
+        query: ParticleSearchQuery,
+    ) -> PdgResult<Vec<ParticleFilterHit<'_>>> {
         query.validate_ranges()?;
         let mut sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE 1 = 1",
@@ -420,9 +438,6 @@ impl Pdg {
             Self::PARTICLE_JOIN
         );
         let mut params = Vec::new();
-        let mass_range = query.mass_range_mev;
-        let width_range = query.width_range_mev;
-        let lifetime_range = query.lifetime_range_seconds;
         let decay_mode = query.decays_to.mode;
         let decay_states =
             self.expand_decay_states(query.decays_to.states, query.decay_state_expansion)?;
@@ -454,21 +469,7 @@ impl Pdg {
             params.push(Value::Real(charge.as_f64()));
         }
 
-        match query.isospin {
-            QuantumFilter::Value(value @ (Isospin::I0 | Isospin::I2)) => {
-                sql.push_str(" AND quantum_i IN (?, ?)");
-                params.extend([
-                    Value::Text(value.to_code().to_owned()),
-                    Value::Text(Isospin::Photon.to_code().to_owned()),
-                ]);
-            }
-            QuantumFilter::Value(value) => {
-                sql.push_str(" AND quantum_i = ?");
-                params.push(Value::Text(value.to_code().to_owned()));
-            }
-            QuantumFilter::Missing => sql.push_str(" AND quantum_i IS NULL"),
-            QuantumFilter::Any => {}
-        }
+        Self::push_isospin_filter(&mut sql, &mut params, &query.isospin);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_g", query.g_parity);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_j", query.angular_momentum);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_p", query.parity);
@@ -485,53 +486,53 @@ impl Pdg {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mass_entries = if mass_range.is_some() {
-            Some(self.property_entries_by_parent(DataType::Mass)?)
-        } else {
-            None
-        };
-        let width_entries = if width_range.is_some() {
-            Some(self.property_entries_by_parent(DataType::FullWidth)?)
-        } else {
-            None
-        };
-        let lifetime_entries = if lifetime_range.is_some() {
-            Some(self.property_entries_by_parent(DataType::Lifetime)?)
-        } else {
-            None
-        };
+        let mut property_ranges = Vec::new();
+        for (data_type, range, unit) in [
+            (DataType::Mass, query.mass_range_mev, Unit::Mev),
+            (DataType::FullWidth, query.width_range_mev, Unit::Mev),
+            (
+                DataType::Lifetime,
+                query.lifetime_range_seconds,
+                Unit::Seconds,
+            ),
+        ] {
+            if let Some(range) = range {
+                property_ranges.push((self.property_entries_by_parent(data_type)?, range, unit));
+            }
+        }
 
         let mut filtered_particles = Vec::new();
         for particle in particles {
-            if !matches_data_range(
-                mass_entries.as_ref(),
-                &particle.pdgid,
-                mass_range,
-                Unit::Mev,
-                query.include_unknown_properties,
-            ) || !matches_data_range(
-                width_entries.as_ref(),
-                &particle.pdgid,
-                width_range,
-                Unit::Mev,
-                query.include_unknown_properties,
-            ) || !matches_data_range(
-                lifetime_entries.as_ref(),
-                &particle.pdgid,
-                lifetime_range,
-                Unit::Seconds,
-                query.include_unknown_properties,
-            ) {
+            if !property_ranges.iter().all(|(entries, range, unit)| {
+                matches_data_range(
+                    entries,
+                    &particle.pdgid,
+                    *range,
+                    *unit,
+                    query.include_unknown_properties,
+                )
+            }) {
                 continue;
             }
 
-            if !decay_states.is_empty()
-                && !self.particle_matches_decay(&particle.pdgid, &decay_states, decay_mode)?
+            let matching_decays =
+                self.matching_decays(&particle.pdgid, &incoming_states, &decay_states, decay_mode)?;
+            if (!decay_states.is_empty()
+                && !matching_decays
+                    .iter()
+                    .any(|channel| channel.matched_final_states))
+                || (!incoming_states.is_empty()
+                    && !matching_decays
+                        .iter()
+                        .any(|channel| channel.matched_initial_states))
             {
                 continue;
             }
 
-            filtered_particles.push(particle);
+            filtered_particles.push(ParticleFilterHit {
+                particle,
+                matching_decays,
+            });
         }
 
         Ok(filtered_particles)
@@ -785,6 +786,28 @@ impl Pdg {
         sql.push(')');
     }
 
+    fn push_isospin_filter(
+        sql: &mut String,
+        params: &mut Vec<Value>,
+        filter: &QuantumFilter<Isospin>,
+    ) {
+        match filter {
+            QuantumFilter::Value(value @ (Isospin::I0 | Isospin::I2)) => {
+                sql.push_str(" AND quantum_i IN (?, ?)");
+                params.extend([
+                    Value::Text(value.to_code().to_owned()),
+                    Value::Text(Isospin::Photon.to_code().to_owned()),
+                ]);
+            }
+            QuantumFilter::Value(value) => {
+                sql.push_str(" AND quantum_i = ?");
+                params.push(Value::Text(value.to_code().to_owned()));
+            }
+            QuantumFilter::Missing => sql.push_str(" AND quantum_i IS NULL"),
+            QuantumFilter::Any => {}
+        }
+    }
+
     fn push_quantum_filter<T: ToString>(
         sql: &mut String,
         params: &mut Vec<Value>,
@@ -803,42 +826,72 @@ impl Pdg {
         }
     }
 
-    fn particle_matches_decay(
+    fn matching_decays(
         &self,
         pdgid: &str,
-        requested: &[Vec<String>],
+        initial: &[Vec<String>],
+        final_states: &[Vec<String>],
         mode: DecayMatchMode,
-    ) -> PdgResult<bool> {
-        let mut stmt = self.conn.prepare(
-            "SELECT decay_pdgid.pdgid, pdgdecay.name, pdgdecay.multiplier
+    ) -> PdgResult<Vec<DecayChannelMatch<'_>>> {
+        if initial.is_empty() && final_states.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT decay_pdgid.pdgid, decay_pdgid.description, decay_pdgid.data_type,
+                    pdgdecay.name, pdgdecay.is_outgoing, pdgdecay.multiplier
             FROM pdgid decay_pdgid
             JOIN pdgdecay ON pdgdecay.pdgid = decay_pdgid.pdgid
             WHERE decay_pdgid.parent_pdgid = ?1
                 AND decay_pdgid.data_type IN ('BFX', 'BFX1', 'BFX2', 'BFX3', 'BFX4', 'BFX5', 'BFI', 'BFI1', 'BFI2', 'BFI3', 'BFI4', 'BFI5')
-                AND pdgdecay.is_outgoing = 1
-            ORDER BY decay_pdgid.sort ASC, pdgdecay.sort ASC",
+            ORDER BY decay_pdgid.sort, decay_pdgid.pdgid, pdgdecay.sort, pdgdecay.id",
         )?;
-        let rows = stmt
-            .query_map([pdgid], |row| {
-                Ok((
-                    row.get::<_, PdgId>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut modes = std::collections::HashMap::<PdgId, Vec<String>>::new();
-        for (mode_pdgid, name, multiplier) in rows {
-            let products = modes.entry(mode_pdgid).or_default();
-            for _ in 0..multiplier {
-                products.push(name.clone());
+        let mut channels: Vec<DecayChannelMatch<'_>> = Vec::new();
+        let mut rows = stmt.query([pdgid])?;
+        while let Some(row) = rows.next()? {
+            let channel_pdgid: PdgId = row.get(0)?;
+            let product = DecayProduct {
+                db: self,
+                name: row.get(3)?,
+                is_outgoing: row.get(4)?,
+                multiplier: row.get(5)?,
+            };
+            match channels.last_mut() {
+                Some(channel) if channel.pdgid == channel_pdgid => channel.products.push(product),
+                _ => channels.push(DecayChannelMatch {
+                    pdgid: channel_pdgid,
+                    description: row.get(1)?,
+                    data_type: row.get(2)?,
+                    products: vec![product],
+                    matched_initial_states: false,
+                    matched_final_states: false,
+                }),
             }
         }
 
-        Ok(modes
-            .values()
-            .any(|products| decay_products_match(requested, products, mode)))
+        channels.retain_mut(|channel| {
+            channel.matched_initial_states = !initial.is_empty()
+                && initial.iter().all(|names| {
+                    channel
+                        .products
+                        .iter()
+                        .any(|product| !product.is_outgoing && names.contains(&product.name))
+                });
+            if !final_states.is_empty() {
+                let mut products = Vec::new();
+                for product in channel
+                    .products
+                    .iter()
+                    .filter(|product| product.is_outgoing)
+                {
+                    for _ in 0..product.multiplier {
+                        products.push(product.name.as_str());
+                    }
+                }
+                channel.matched_final_states = decay_products_match(final_states, &products, mode);
+            }
+            channel.matched_initial_states || channel.matched_final_states
+        });
+        Ok(channels)
     }
 
     fn expand_decay_state_names(&self, name: &str) -> PdgResult<Vec<String>> {
@@ -1022,17 +1075,14 @@ impl Interval {
 }
 
 fn matches_data_range(
-    entries_by_parent: Option<&std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>>,
+    entries_by_parent: &std::collections::HashMap<PdgId, Vec<DataEntry<'_>>>,
     pdgid: &str,
-    range: Option<(f64, f64)>,
+    (min, max): (f64, f64),
     unit: Unit,
     include_unknown: bool,
 ) -> bool {
-    let Some((min, max)) = range else {
-        return true;
-    };
     let mut intervals = entries_by_parent
-        .and_then(|entries| entries.get(pdgid))
+        .get(pdgid)
         .into_iter()
         .flatten()
         .filter_map(|entry| data_interval(entry, unit))
@@ -1047,7 +1097,7 @@ fn matches_data_range(
 
 fn decay_products_match(
     requested: &[Vec<String>],
-    products: &[String],
+    products: &[&str],
     mode: DecayMatchMode,
 ) -> bool {
     if requested.len() > products.len()
@@ -1066,13 +1116,13 @@ fn decay_products_match(
 
 fn assign_decay_product(
     requested: &[Vec<String>],
-    products: &[String],
+    products: &[&str],
     claims: &mut [Option<usize>],
     visited: &mut [bool],
     index: usize,
 ) -> bool {
-    for (product_index, product) in products.iter().enumerate() {
-        if visited[product_index] || !requested[index].contains(product) {
+    for (product_index, &product) in products.iter().enumerate() {
+        if visited[product_index] || !requested[index].iter().any(|name| name == product) {
             continue;
         }
 
@@ -1540,7 +1590,7 @@ mod tests {
     #[test]
     fn decay_search_can_reassign_overlapping_alias_matches() {
         let requested = [vec!["pi+".into(), "pi-".into()], vec!["pi+".into()]];
-        let products = ["pi+".into(), "pi-".into()];
+        let products = ["pi+", "pi-"];
         assert!(decay_products_match(
             &requested,
             &products,
@@ -1580,6 +1630,34 @@ mod tests {
             .expand_decay_states(vec!["KS".into()], DecayStateExpansion::Literal)
             .unwrap();
         assert_eq!(literal, [vec!["KS"]]);
+    }
+
+    #[test]
+    fn decay_search_reports_which_filters_each_channel_matched() {
+        let db = test_pdg();
+        let hits = db
+            .search_particle_hits(
+                ParticleSearchQuery::new()
+                    .mcid(211)
+                    .decays_from(["pi+"])
+                    .decays_to(["mu+", "nu_mu"])
+                    .decay_state_expansion(DecayStateExpansion::Literal),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        let channels = &hits[0].matching_decays;
+        let channel = channels
+            .iter()
+            .find(|channel| channel.pdgid == "S008.1")
+            .unwrap();
+        assert!(channel.matched_initial_states);
+        assert!(channel.matched_final_states);
+        let channel = channels
+            .iter()
+            .find(|channel| channel.pdgid == "S008.2")
+            .unwrap();
+        assert!(channel.matched_initial_states);
+        assert!(!channel.matched_final_states);
     }
 
     #[test]

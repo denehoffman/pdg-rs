@@ -2,9 +2,10 @@
 
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use pdg_rs::{
-    DataEntry, DataType, ParticleProperty, Pdg, PdgDatabaseInfo, PdgFootnote, PdgIdEntry,
-    PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgReference, PdgResult, PdgText,
-    TextSearchCorrection, TextSearchParent, TextSearchResult, TextSearchSource,
+    DataEntry, DataType, DecayChannelMatch, ParticleFilterHit, ParticleProperty, Pdg,
+    PdgDatabaseInfo, PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle,
+    PdgReference, PdgResult, PdgText, TextSearchCorrection, TextSearchParent, TextSearchResult,
+    TextSearchSource,
 };
 use serde::Serialize;
 
@@ -32,6 +33,8 @@ pub(crate) struct ParticleDto {
     branching_ratios: Option<Vec<BranchingRatioDto>>,
     texts: Option<Vec<TextDto>>,
     footnotes: Option<Vec<FootnoteDto>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    matching_decays: Vec<DecayChannelMatchDto>,
 }
 
 impl TryFrom<&PdgParticle<'_>> for ParticleDto {
@@ -71,8 +74,61 @@ impl TryFrom<&PdgParticle<'_>> for ParticleDto {
             branching_ratios: None,
             texts: None,
             footnotes: None,
+            matching_decays: Vec::new(),
         })
     }
+}
+
+impl TryFrom<&ParticleFilterHit<'_>> for ParticleDto {
+    type Error = CliError;
+
+    fn try_from(hit: &ParticleFilterHit<'_>) -> Result<Self, Self::Error> {
+        let mut particle = Self::try_from(&hit.particle)?;
+        particle.matching_decays = hit
+            .matching_decays
+            .iter()
+            .map(DecayChannelMatchDto::from)
+            .collect();
+        Ok(particle)
+    }
+}
+
+#[derive(Serialize)]
+struct DecayChannelMatchDto {
+    pdgid: String,
+    description: String,
+    data_type: String,
+    products: Vec<DecayProductDto>,
+    matched_initial_states: bool,
+    matched_final_states: bool,
+}
+
+impl From<&DecayChannelMatch<'_>> for DecayChannelMatchDto {
+    fn from(channel: &DecayChannelMatch<'_>) -> Self {
+        Self {
+            pdgid: channel.pdgid.clone(),
+            description: channel.description.clone(),
+            data_type: channel.data_type.to_code().to_owned(),
+            products: channel
+                .products
+                .iter()
+                .map(|product| DecayProductDto {
+                    name: product.name.clone(),
+                    is_outgoing: product.is_outgoing,
+                    multiplier: product.multiplier,
+                })
+                .collect(),
+            matched_initial_states: channel.matched_initial_states,
+            matched_final_states: channel.matched_final_states,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DecayProductDto {
+    name: String,
+    is_outgoing: bool,
+    multiplier: i64,
 }
 
 #[derive(Serialize)]
@@ -417,7 +473,10 @@ pub(crate) fn headline_property_rows<'pdg>(
         .collect())
 }
 
-pub(crate) fn particle_table(particles: &[PdgParticle<'_>], full: bool) -> CliResult<Table> {
+pub(crate) fn particle_table<'a, 'pdg: 'a>(
+    particles: impl IntoIterator<Item = &'a PdgParticle<'pdg>>,
+    full: bool,
+) -> CliResult<Table> {
     let mut table = table();
     if full {
         table.set_header([

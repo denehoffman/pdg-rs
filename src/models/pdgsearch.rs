@@ -1,6 +1,33 @@
 use crate::{
-    AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleType, PdgError, PdgResult,
+    AngularMomentum, Charge, DataType, DecayProduct, Isospin, Parity, ParticleClass, ParticleType,
+    PdgError, PdgId, PdgParticle, PdgResult,
 };
+
+/// A particle returned by a filter search, with the channels that satisfied its decay filters.
+#[derive(Debug)]
+pub struct ParticleFilterHit<'pdg> {
+    /// The matching particle.
+    pub particle: PdgParticle<'pdg>,
+    /// Matching PDG channels, empty for a search without decay filters.
+    pub matching_decays: Vec<DecayChannelMatch<'pdg>>,
+}
+
+/// A recorded decay channel that satisfied an initial- or final-state filter.
+#[derive(Debug)]
+pub struct DecayChannelMatch<'pdg> {
+    /// PDG identifier for the channel, which may be listed under a shared particle entry.
+    pub pdgid: PdgId,
+    /// PDG description, including any qualifiers shown in the listing.
+    pub description: String,
+    /// Branching-fraction data type for the channel.
+    pub data_type: DataType,
+    /// All initial and final states as recorded, with their multiplicities.
+    pub products: Vec<DecayProduct<'pdg>>,
+    /// Whether this channel satisfied the supplied initial-state filter.
+    pub matched_initial_states: bool,
+    /// Whether this channel satisfied the supplied final-state filter.
+    pub matched_final_states: bool,
+}
 
 /// Builder for particle searches run by [`crate::Pdg::search_particles`] and
 /// ranked name searches run by [`crate::Pdg::find_particles`].
