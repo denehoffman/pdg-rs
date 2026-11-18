@@ -9,7 +9,9 @@ use thiserror::Error;
 
 mod database;
 mod models;
+mod particle_search;
 pub use models::*;
+pub use particle_search::{ParticleMatchKind, ParticleSearchHit};
 
 /// The default PDG edition used by this crate.
 pub const LATEST_EDITION: &str = "2025";
@@ -77,7 +79,7 @@ pub enum PdgError {
 /// Handle for querying the Particle Data Group database.
 ///
 /// Create a handle with [`Pdg::open`], then use lookup methods such as
-/// [`Pdg::particle`], [`Pdg::mcid`], [`Pdg::search_particles`], and
+/// [`Pdg::particle`], [`Pdg::mcid`], [`Pdg::find_particles`], and
 /// [`Pdg::search_text`] to retrieve typed records.
 ///
 /// # Examples
@@ -1193,6 +1195,76 @@ mod tests {
             "/data/pdgall-2025-v0.2.2.sqlite"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn ranked_search_resolves_database_aliases_and_particle_notation() {
+        use ParticleMatchKind::{ExactAlias, ExactName, Typo};
+
+        let db = test_pdg();
+        for (query, name, kind) in [
+            ("X(3872)", "chi_c1(3872)", ExactAlias),
+            ("KS0", "K(S)0", ExactAlias),
+            ("K_S^0", "K(S)0", ExactAlias),
+            ("Kₛ⁰", "K(S)0", ExactAlias),
+            ("σ", "f_0(500)0", ExactAlias),
+            ("H0", "H", ExactAlias),
+            ("π⁺", "pi+", ExactName),
+            ("K̄⁰", "Kbar0", ExactName),
+            ("proton", "p", ExactAlias),
+            ("anti-proton", "pbar", ExactAlias),
+            ("prtoon", "p", Typo),
+            ("Lamda(1520)0", "Lambda(1520)0", Typo),
+        ] {
+            let hits = db
+                .find_particles(query, ParticleSearchQuery::new())
+                .unwrap();
+            assert_eq!(
+                hits.first()
+                    .map(|hit| (hit.particle.name.as_str(), hit.kind)),
+                Some((name, kind)),
+                "{query}"
+            );
+            if query == "X(3872)" {
+                assert_eq!(hits[0].matched_name, query);
+            }
+        }
+    }
+
+    #[test]
+    fn ranked_search_composes_with_filters_and_keeps_stable_ties() {
+        let db = test_pdg();
+        let hits = db.find_particles("pi", ParticleSearchQuery::new()).unwrap();
+        assert_eq!(hits[0].particle.name, "pi+");
+        assert_eq!(hits[1].particle.name, "pi-");
+
+        let hits = db
+            .find_particles("pi", ParticleSearchQuery::new().charge(Charge::Minus))
+            .unwrap();
+        assert_eq!(hits[0].particle.name, "pi-");
+        assert!(hits.iter().all(|hit| hit.particle.charge == Charge::Minus));
+
+        let hits = db.find_particles("p", ParticleSearchQuery::new()).unwrap();
+        assert_eq!(hits[0].particle.name, "p");
+        assert_eq!(hits[0].kind, ParticleMatchKind::ExactName);
+        assert!(hits.windows(2).all(|hits| hits[0].kind <= hits[1].kind));
+    }
+
+    #[test]
+    fn ranked_search_preserves_charge_antiparticles_and_resonance_numbers() {
+        let db = test_pdg();
+        let charged = db
+            .find_particles("Delta(1232)+", ParticleSearchQuery::new())
+            .unwrap();
+        assert_eq!(charged.len(), 1);
+        assert_eq!(charged[0].particle.name, "Delta(1232)+");
+
+        for query in ["lambda(1521)0", "Sigma(1385)2", "\u{2003}"] {
+            let hits = db
+                .find_particles(query, ParticleSearchQuery::new())
+                .unwrap();
+            assert!(hits.is_empty(), "{query}");
+        }
     }
 
     #[test]
