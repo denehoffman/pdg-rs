@@ -160,6 +160,70 @@ fn find_particles_accepts_negative_mcid_without_equals() {
 }
 
 #[test]
+fn find_mcid_composes_with_name_and_charge_filters() {
+    for (name, charge, should_match) in [
+        ("pi-", "-1", true),
+        ("pi+", "-1", false),
+        ("pi-", "0", false),
+    ] {
+        let result = pdg_command()
+            .args(["find", "--mcid", "-211", "--format", "json"])
+            .args([name, "--charge", charge])
+            .assert()
+            .success();
+        let hits: Vec<serde_json::Value> =
+            serde_json::from_slice(&result.get_output().stdout).unwrap();
+        if should_match {
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0]["name"], "pi-");
+        } else {
+            assert!(hits.is_empty());
+        }
+    }
+}
+
+#[test]
+fn find_can_opt_in_to_unknown_property_values() {
+    let args = ["find", "pi+", "--width", "0..1", "--format", "json"];
+    pdg_command().args(args).assert().success().stdout("[]\n");
+    pdg_command()
+        .args(args)
+        .arg("--include-unknown-properties")
+        .assert()
+        .success()
+        .stdout(contains("\"name\": \"pi+\""));
+}
+
+#[test]
+fn find_rejects_invalid_property_ranges() {
+    for (range, error) in [("NaN..1", "cannot be NaN"), ("2..1", "must be <=")] {
+        pdg_command()
+            .args(["find", "--mass", range])
+            .assert()
+            .code(2)
+            .stderr(contains(error));
+    }
+}
+
+#[test]
+fn find_decay_contains_does_not_reuse_one_product() {
+    pdg_command()
+        .args([
+            "find",
+            "pi+",
+            "--decay-contains",
+            "mu+,mu+",
+            "--decay-expansion",
+            "literal",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout("[]\n");
+}
+
+#[test]
 fn find_particles_matches_common_aliases() {
     let mut cmd = pdg_command();
     cmd.args(["find", "proton"])

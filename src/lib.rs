@@ -19,7 +19,7 @@ pub const LATEST_EDITION: &str = "2025";
 /// Result type returned by fallible `pdg-rs` operations.
 pub type PdgResult<T> = Result<T, PdgError>;
 
-/// Errors returned by database access, code parsing, and quantum number conversion.
+/// Errors returned by database access, query validation, code parsing, and quantum number conversion.
 #[derive(Error, Debug)]
 pub enum PdgError {
     /// A `SQLite` error from the PDG database.
@@ -68,6 +68,16 @@ pub enum PdgError {
     /// A data type code was not recognized.
     #[error("Failed to parse DataType: {0}")]
     ParseDataType(String),
+    /// A property range had unordered bounds or a `NaN` bound.
+    #[error("invalid {property} range {min}..{max}. Bounds must be ordered and cannot be NaN")]
+    InvalidPropertyRange {
+        /// Name of the filtered property.
+        property: &'static str,
+        /// Minimum of the requested range.
+        min: f64,
+        /// Maximum of the requested range.
+        max: f64,
+    },
     /// A quantum number could not be converted into the requested numeric representation.
     #[error(transparent)]
     QuantumNumberConversion(#[from] QuantumNumberConversionError),
@@ -406,9 +416,9 @@ impl Pdg {
     ///
     /// # Errors
     ///
-    /// Returns a database error if any particle, property, or decay filter query
-    /// cannot be executed.
+    /// Returns an error if a property range is invalid or a database query fails.
     pub fn search_particles(&self, query: ParticleSearchQuery) -> PdgResult<Vec<PdgParticle<'_>>> {
+        query.validate_ranges()?;
         let mut sql = format!(
             "SELECT {} FROM pdgparticle {} WHERE 1 = 1",
             Self::PARTICLE_COLUMNS,
@@ -418,13 +428,20 @@ impl Pdg {
         let mass_range = query.mass_range_mev;
         let width_range = query.width_range_mev;
         let lifetime_range = query.lifetime_range_seconds;
-        let decays_to = query.decays_to.clone();
-        let decays_from = query.decays_from.clone();
-        let decay_state_expansion = query.decay_state_expansion;
+        let decay_mode = query.decays_to.mode;
+        let decay_states =
+            self.expand_decay_states(query.decays_to.states, query.decay_state_expansion)?;
+        let incoming_states =
+            self.expand_decay_states(query.decays_from, query.decay_state_expansion)?;
 
         if let Some(name_contains) = query.name_contains {
             sql.push_str(" AND name LIKE '%' || ? || '%'");
             params.push(Value::Text(name_contains));
+        }
+
+        if let Some(mcid) = query.mcid {
+            sql.push_str(" AND mcid = ?");
+            params.push(mcid.into());
         }
 
         if let Some(particle_class) = query.particle_class {
@@ -448,20 +465,8 @@ impl Pdg {
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_p", query.parity);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_c", query.charge_conjugation);
 
-        self.push_decay_filters(
-            &mut sql,
-            &mut params,
-            decays_to.states.clone(),
-            true,
-            decay_state_expansion,
-        )?;
-        self.push_decay_filters(
-            &mut sql,
-            &mut params,
-            decays_from,
-            false,
-            decay_state_expansion,
-        )?;
+        Self::push_decay_filters(&mut sql, &mut params, &decay_states, true);
+        Self::push_decay_filters(&mut sql, &mut params, &incoming_states, false);
 
         sql.push_str(" ORDER BY pdgparticle.pdgid, name");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -494,27 +499,25 @@ impl Pdg {
                 &particle.pdgid,
                 mass_range,
                 Unit::Mev,
+                query.include_unknown_properties,
             ) || !matches_data_range(
                 width_entries.as_ref(),
                 &particle.pdgid,
                 width_range,
                 Unit::Mev,
+                query.include_unknown_properties,
             ) || !matches_data_range(
                 lifetime_entries.as_ref(),
                 &particle.pdgid,
                 lifetime_range,
                 Unit::Seconds,
+                query.include_unknown_properties,
             ) {
                 continue;
             }
 
-            if decays_to.mode == DecayMatchMode::Exact
-                && !decays_to.states.is_empty()
-                && !self.particle_matches_exact_decay(
-                    &particle.pdgid,
-                    &decays_to.states,
-                    decay_state_expansion,
-                )?
+            if !decay_states.is_empty()
+                && !self.particle_matches_decay(&particle.pdgid, &decay_states, decay_mode)?
             {
                 continue;
             }
@@ -711,16 +714,25 @@ impl Pdg {
         Ok(measurements)
     }
 
-    fn push_decay_filters(
+    fn expand_decay_states(
         &self,
+        states: Vec<String>,
+        expansion: DecayStateExpansion,
+    ) -> PdgResult<Vec<Vec<String>>> {
+        states
+            .into_iter()
+            .map(|state| self.expand_decay_state_names(state, expansion))
+            .collect()
+    }
+
+    fn push_decay_filters(
         sql: &mut String,
         params: &mut Vec<Value>,
-        states: Vec<String>,
+        states: &[Vec<String>],
         is_outgoing: bool,
-        expansion: DecayStateExpansion,
-    ) -> PdgResult<()> {
+    ) {
         if states.is_empty() {
-            return Ok(());
+            return;
         }
 
         sql.push_str(
@@ -730,8 +742,7 @@ impl Pdg {
                 WHERE decay_pdgid.data_type IN ('BFX', 'BFX1', 'BFX2', 'BFX3', 'BFX4', 'BFX5', 'BFI', 'BFI1', 'BFI2', 'BFI3', 'BFI4', 'BFI5')",
         );
 
-        for state in states {
-            let names = self.expand_decay_state_names(state, expansion)?;
+        for names in states {
             let placeholders = std::iter::repeat_n("?", names.len())
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -745,11 +756,10 @@ impl Pdg {
                 )"
             ));
             params.push(Value::Integer(i64::from(is_outgoing)));
-            params.extend(names.into_iter().map(Value::Text));
+            params.extend(names.iter().cloned().map(Value::Text));
         }
 
         sql.push(')');
-        Ok(())
     }
 
     fn push_quantum_filter<T: ToString>(
@@ -770,16 +780,12 @@ impl Pdg {
         }
     }
 
-    fn particle_matches_exact_decay(
+    fn particle_matches_decay(
         &self,
         pdgid: &str,
-        states: &[String],
-        expansion: DecayStateExpansion,
+        requested: &[Vec<String>],
+        mode: DecayMatchMode,
     ) -> PdgResult<bool> {
-        let requested = states
-            .iter()
-            .map(|state| self.expand_decay_state_names(state.clone(), expansion))
-            .collect::<PdgResult<Vec<_>>>()?;
         let mut stmt = self.conn.prepare(
             "SELECT decay_pdgid.pdgid, pdgdecay.name, pdgdecay.multiplier
             FROM pdgid decay_pdgid
@@ -809,7 +815,7 @@ impl Pdg {
 
         Ok(modes
             .values()
-            .any(|products| exact_decay_products_match(&requested, products)))
+            .any(|products| decay_products_match(requested, products, mode)))
     }
 
     fn expand_decay_state_names(
@@ -1005,51 +1011,65 @@ fn matches_data_range(
     pdgid: &str,
     range: Option<(f64, f64)>,
     unit: Unit,
+    include_unknown: bool,
 ) -> bool {
     let Some((min, max)) = range else {
         return true;
     };
-    let Some(entries) = entries_by_parent.and_then(|entries| entries.get(pdgid)) else {
-        return true;
-    };
-    if entries.is_empty() {
-        return true;
+    let mut intervals = entries_by_parent
+        .and_then(|entries| entries.get(pdgid))
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| data_interval(entry, unit))
+        .filter(|interval| interval.min <= interval.max)
+        .peekable();
+    if intervals.peek().is_none() {
+        return include_unknown;
     }
 
-    entries
-        .iter()
-        .any(|entry| data_interval(entry, unit).is_none_or(|interval| interval.overlaps(min, max)))
+    intervals.any(|interval| interval.overlaps(min, max))
 }
 
-fn exact_decay_products_match(requested: &[Vec<String>], products: &[String]) -> bool {
-    if requested.len() != products.len() {
+fn decay_products_match(
+    requested: &[Vec<String>],
+    products: &[String],
+    mode: DecayMatchMode,
+) -> bool {
+    if requested.len() > products.len()
+        || (mode == DecayMatchMode::Exact && requested.len() != products.len())
+    {
         return false;
     }
 
-    let mut used = vec![false; products.len()];
-    exact_decay_products_match_from(requested, products, &mut used, 0)
+    let mut claims = vec![None; products.len()];
+    let mut visited = vec![false; products.len()];
+    (0..requested.len()).all(|index| {
+        visited.fill(false);
+        assign_decay_product(requested, products, &mut claims, &mut visited, index)
+    })
 }
 
-fn exact_decay_products_match_from(
+fn assign_decay_product(
     requested: &[Vec<String>],
     products: &[String],
-    used: &mut [bool],
+    claims: &mut [Option<usize>],
+    visited: &mut [bool],
     index: usize,
 ) -> bool {
-    if index == requested.len() {
-        return true;
-    }
-
     for (product_index, product) in products.iter().enumerate() {
-        if used[product_index] || !requested[index].contains(product) {
+        if visited[product_index] || !requested[index].contains(product) {
             continue;
         }
 
-        used[product_index] = true;
-        if exact_decay_products_match_from(requested, products, used, index + 1) {
+        // An earlier alias match can move to another product to free this one.
+        visited[product_index] = true;
+        let previous = claims[product_index];
+        if previous.is_none_or(|previous_index| {
+            assign_decay_product(requested, products, claims, visited, previous_index)
+        }) {
+            claims[product_index] = Some(index);
             return true;
         }
-        used[product_index] = false;
     }
 
     false
@@ -1265,6 +1285,98 @@ mod tests {
                 .unwrap();
             assert!(hits.is_empty(), "{query}");
         }
+    }
+
+    #[test]
+    fn search_ranges_require_comparable_values_unless_opted_in() {
+        let db = test_pdg();
+        let missing_width = ParticleSearchQuery::new()
+            .mcid(211)
+            .width_range_mev(0.0, 1.0);
+        assert!(
+            db.search_particles(missing_width.clone())
+                .unwrap()
+                .is_empty()
+        );
+
+        let hits = db
+            .search_particles(missing_width.include_unknown_properties(true))
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "pi+");
+
+        let known_mass = ParticleSearchQuery::new()
+            .mcid(211)
+            .mass_range_mev(0.0, 1.0)
+            .include_unknown_properties(true);
+        assert!(db.search_particles(known_mass).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_validates_property_range_bounds() {
+        let db = test_pdg();
+        for (expected, query) in [
+            ("mass", ParticleSearchQuery::new().mass_range_mev(2.0, 1.0)),
+            (
+                "width",
+                ParticleSearchQuery::new().width_range_mev(f64::NAN, 1.0),
+            ),
+            (
+                "lifetime",
+                ParticleSearchQuery::new().lifetime_range_seconds(0.0, f64::NAN),
+            ),
+        ] {
+            assert!(matches!(
+                db.search_particles(query.clone()),
+                Err(PdgError::InvalidPropertyRange { property, .. }) if property == expected
+            ));
+            assert!(matches!(
+                db.find_particles("", query),
+                Err(PdgError::InvalidPropertyRange { property, .. }) if property == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn decay_search_uses_distinct_occurrences_from_one_mode() {
+        let db = test_pdg();
+        let literal =
+            ParticleSearchQuery::new().decay_state_expansion(DecayStateExpansion::Literal);
+        let pion = literal.clone().mcid(211);
+        let d_plus = literal.mcid(411);
+
+        for query in [
+            pion.clone().decay_contains(["mu+", "mu+"]),
+            d_plus.clone().decays_to(["pi+", "pi+"]),
+        ] {
+            assert!(db.search_particles(query).unwrap().is_empty());
+        }
+
+        for (query, name) in [
+            (pion.decay_contains(["mu+", "nu_mu"]), "pi+"),
+            (d_plus.clone().decay_contains(["pi+", "pi+"]), "D+"),
+            (d_plus.decays_to(["K-", "pi+", "pi+"]), "D+"),
+        ] {
+            let hits = db.search_particles(query).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].name, name);
+        }
+    }
+
+    #[test]
+    fn decay_search_can_reassign_overlapping_alias_matches() {
+        let requested = [vec!["pi+".into(), "pi-".into()], vec!["pi+".into()]];
+        let products = ["pi+".into(), "pi-".into()];
+        assert!(decay_products_match(
+            &requested,
+            &products,
+            DecayMatchMode::Exact
+        ));
+        assert!(decay_products_match(
+            &requested,
+            &products,
+            DecayMatchMode::Contains
+        ));
     }
 
     #[test]

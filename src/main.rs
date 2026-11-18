@@ -298,7 +298,7 @@ struct ParticleFilters {
     /// Filter by electric charge, e.g. 0, +1, -1, +2/3.
     #[arg(long, allow_hyphen_values = true, value_parser = parse_charge)]
     charge: Option<Charge>,
-    /// Look up a particle by Monte Carlo ID instead of name/search filters.
+    /// Filter by signed Monte Carlo ID.
     #[arg(long, allow_hyphen_values = true)]
     mcid: Option<isize>,
     /// Filter by mass range in MeV, formatted as MIN..MAX.
@@ -325,6 +325,9 @@ struct ParticleFilters {
     /// Filter by lifetime range in seconds, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
     lifetime: Option<(f64, f64)>,
+    /// Include particles with no comparable value for a requested property range.
+    #[arg(long)]
+    include_unknown_properties: bool,
     /// Filter particles with an exact decay to comma-separated final states.
     #[arg(long, value_delimiter = ',')]
     decays_to: Vec<String>,
@@ -481,19 +484,15 @@ fn run_find(command: &FindCommand, offline: bool) -> CliResult<()> {
         return print_help(Some("find"));
     }
 
+    let filters = build_query(&command.filters)?;
     let db = open_pdg(offline)?;
-    let mut particles = if let Some(mcid) = command.filters.mcid {
-        db.mcid(mcid)?.into_iter().collect()
+    let mut particles = if let Some(query) = query {
+        db.find_particles(query, filters)?
+            .into_iter()
+            .map(|hit| hit.particle)
+            .collect()
     } else {
-        let filters = build_query(&command.filters)?;
-        if let Some(query) = query {
-            db.find_particles(query, filters)?
-                .into_iter()
-                .map(|hit| hit.particle)
-                .collect()
-        } else {
-            db.search_particles(filters)?
-        }
+        db.search_particles(filters)?
     };
 
     let default_limit = query.is_some().then_some(DEFAULT_SEARCH_LIMIT);
@@ -857,7 +856,11 @@ fn show_dto(
 }
 
 fn build_query(filters: &ParticleFilters) -> CliResult<ParticleSearchQuery> {
-    let mut search = ParticleSearchQuery::new();
+    let mut search =
+        ParticleSearchQuery::new().include_unknown_properties(filters.include_unknown_properties);
+    if let Some(mcid) = filters.mcid {
+        search = search.mcid(mcid);
+    }
     if let Some(class) = filters.class {
         search = search.class(class);
     }
@@ -1226,6 +1229,9 @@ fn parse_range(value: &str) -> Result<(f64, f64), String> {
         .ok_or_else(|| "expected range formatted as MIN..MAX".to_string())?;
     let min = f64::from_str(min).map_err(|_| "invalid range minimum".to_string())?;
     let max = f64::from_str(max).map_err(|_| "invalid range maximum".to_string())?;
+    if min.is_nan() || max.is_nan() {
+        return Err("range bounds cannot be NaN".into());
+    }
     if min > max {
         return Err("range minimum must be <= maximum".into());
     }

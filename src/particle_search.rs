@@ -53,7 +53,7 @@ impl Pdg {
     /// ```
     ///
     /// # Errors
-    /// Returns a database error if a particle, filter, or alias query fails.
+    /// Returns an error if a property range is invalid or a database query fails.
     pub fn find_particles(
         &self,
         text: &str,
@@ -61,6 +61,7 @@ impl Pdg {
     ) -> PdgResult<Vec<ParticleSearchHit<'_>>> {
         let query = normalize_name(text);
         if query.is_empty() {
+            filters.validate_ranges()?;
             return Ok(Vec::new());
         }
         let particles = self.search_particles(filters)?;
