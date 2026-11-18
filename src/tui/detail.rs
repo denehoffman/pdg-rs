@@ -1,14 +1,16 @@
+use std::collections::HashSet;
+
 use crossterm::event::KeyCode;
 use pdg_rs::{
-    EntryDetailView, EntryDetails, Lookup, LookupSelector, OwnedDecayChannelMatch, ParticleSummary,
-    Pdg, PdgIdEntry, PdgReference, PdgResult, TextSearchResult,
+    EntryDetailView, EntryDetails, Lookup, LookupSelector, ParticleSummary, Pdg, PdgIdEntry,
+    PdgReference, PdgResult, TextSearchResult,
 };
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style, Stylize},
     text::Line,
-    widgets::{Block, List, ListItem, ListState},
+    widgets::{Block, List, ListItem, ListState, Paragraph},
 };
 
 use super::Hit;
@@ -23,6 +25,7 @@ pub(super) enum View {
     Measurements,
     References,
     Matches,
+    Links,
 }
 
 impl View {
@@ -35,6 +38,7 @@ impl View {
             Self::Measurements => "Measurements",
             Self::References => "References",
             Self::Matches => "Matching decay channels",
+            Self::Links => "Linked entries",
         }
     }
 
@@ -47,13 +51,14 @@ impl View {
             '4' => Some(Self::Measurements),
             '5' => Some(Self::References),
             '6' => Some(Self::Matches),
+            '7' => Some(Self::Links),
             _ => None,
         }
     }
 
     const fn selection(self) -> Option<EntryDetailView> {
         match self {
-            Self::Text | Self::Matches => None,
+            Self::Text | Self::Matches | Self::Links => None,
             Self::Overview => Some(EntryDetailView::Overview),
             Self::Mass => Some(EntryDetailView::Mass),
             Self::Decays => Some(EntryDetailView::Decays),
@@ -61,14 +66,18 @@ impl View {
             Self::References => Some(EntryDetailView::References),
         }
     }
+
+    pub(super) const fn is_list(self) -> bool {
+        matches!(self, Self::Matches | Self::Links)
+    }
 }
 
 pub(super) struct Detail {
     entry: PdgIdEntry,
     particle: Option<ParticleSummary>,
     text: Option<TextSearchResult>,
-    matching_decays: Vec<OwnedDecayChannelMatch>,
-    matches: ListState,
+    matches: EntryList,
+    links: Option<EntryList>,
     pub(super) view: View,
     pub(super) lines: Vec<Line<'static>>,
     pub(super) scroll: u16,
@@ -80,26 +89,36 @@ impl Detail {
         else {
             return Ok(None);
         };
-        let (particle, text, matching_decays) = match hit {
+        let (particle, text, matches) = match hit {
             Hit::Particle(hit) => (
                 Some(hit.particle.clone()),
                 None,
-                hit.matching_decays.clone(),
+                EntryList::new(
+                    hit.matching_decays
+                        .iter()
+                        .map(|channel| EntryLink {
+                            pdgid: channel.pdgid.clone(),
+                            description: channel.description.clone(),
+                            relation: None,
+                        })
+                        .collect(),
+                ),
             ),
             Hit::Text(hit) => (
                 (particles.len() == 1).then(|| ParticleSummary::from(&particles[0])),
                 Some(hit.clone()),
-                Vec::new(),
+                EntryList::default(),
             ),
         };
-        Self::new(db, entry, particle, text, matching_decays).map(Some)
+        Self::new(db, entry, particle, text, matches).map(Some)
     }
 
-    pub(super) fn open_channel(db: &Pdg, id: &str) -> PdgResult<Option<Self>> {
-        let Some(entry) = db.pdgid(id)? else {
+    pub(super) fn open_entry(db: &Pdg, id: &str) -> PdgResult<Option<Self>> {
+        let Lookup::Found { entry, particles } = db.lookup(LookupSelector::PdgId(id))? else {
             return Ok(None);
         };
-        Self::new(db, entry, None, None, Vec::new()).map(Some)
+        let particle = (particles.len() == 1).then(|| ParticleSummary::from(&particles[0]));
+        Self::new(db, entry, particle, None, EntryList::default()).map(Some)
     }
 
     fn new(
@@ -107,22 +126,21 @@ impl Detail {
         entry: PdgIdEntry,
         particle: Option<ParticleSummary>,
         text: Option<TextSearchResult>,
-        matching_decays: Vec<OwnedDecayChannelMatch>,
+        matches: EntryList,
     ) -> PdgResult<Self> {
-        let view = if !matching_decays.is_empty() {
+        let view = if !matches.entries.is_empty() {
             View::Matches
         } else if text.is_some() {
             View::Text
         } else {
             View::Overview
         };
-        let matches = ListState::default().with_selected((view == View::Matches).then_some(0));
         let mut detail = Self {
             entry,
             particle,
             text,
-            matching_decays,
             matches,
+            links: None,
             view,
             lines: Vec::new(),
             scroll: 0,
@@ -146,33 +164,30 @@ impl Detail {
     }
 
     pub(super) const fn has_matches(&self) -> bool {
-        !self.matching_decays.is_empty()
+        !self.matches.entries.is_empty()
     }
 
-    pub(super) fn selected_channel(&self) -> Option<&str> {
-        if self.view != View::Matches {
-            return None;
+    pub(super) fn selected_entry(&self) -> Option<&str> {
+        let list = match self.view {
+            View::Matches => &self.matches,
+            View::Links => self.links.as_ref()?,
+            _ => return None,
+        };
+        let index = list.state.selected()?;
+        list.entries.get(index).map(|entry| entry.pdgid.as_str())
+    }
+
+    const fn current_list_mut(&mut self) -> Option<&mut EntryList> {
+        match self.view {
+            View::Matches => Some(&mut self.matches),
+            View::Links => self.links.as_mut(),
+            _ => None,
         }
-        self.matches
-            .selected()
-            .and_then(|index| self.matching_decays.get(index))
-            .map(|channel| channel.pdgid.as_str())
     }
 
     pub(super) fn navigate(&mut self, code: KeyCode, page: u16) {
-        if self.view == View::Matches {
-            let last = self.matching_decays.len().saturating_sub(1);
-            let selected = self.matches.selected().unwrap_or_default();
-            let index = match code {
-                KeyCode::Up => selected.saturating_sub(1),
-                KeyCode::Down => selected.saturating_add(1).min(last),
-                KeyCode::PageUp => selected.saturating_sub(usize::from(page)),
-                KeyCode::PageDown => selected.saturating_add(usize::from(page)).min(last),
-                KeyCode::Home => 0,
-                KeyCode::End => last,
-                _ => return,
-            };
-            self.matches.select(Some(index));
+        if let Some(list) = self.current_list_mut() {
+            list.navigate(code, page);
         } else {
             self.scroll = match code {
                 KeyCode::Up => self.scroll.saturating_sub(1),
@@ -186,33 +201,46 @@ impl Detail {
         }
     }
 
-    pub(super) fn draw_matches(&mut self, frame: &mut Frame<'_>, area: Rect, accent: Style) {
+    pub(super) fn draw_list(&mut self, frame: &mut Frame<'_>, area: Rect, accent: Style) {
         let block = Block::bordered().border_style(accent).title(format!(
             " {} · {} ",
             self.id(),
             self.view.label()
         ));
-        let items = self
-            .matching_decays
-            .iter()
-            .map(|channel| ListItem::new(format!("{}  {}", channel.pdgid, channel.description)));
-        frame.render_stateful_widget(
-            List::new(items)
-                .block(block)
-                .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-                .highlight_symbol("› "),
-            area,
-            &mut self.matches,
-        );
+        let Some(list) = self.current_list_mut() else {
+            return;
+        };
+        if list.entries.is_empty() {
+            frame.render_widget(Paragraph::new("No linked PDG entries.").block(block), area);
+        } else {
+            let items = list.entries.iter().map(|entry| {
+                ListItem::new(entry.relation.map_or_else(
+                    || format!("{}  {}", entry.pdgid, entry.description),
+                    |relation| format!("{}  {relation}  {}", entry.pdgid, entry.description),
+                ))
+            });
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(block)
+                    .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+                    .highlight_symbol("› "),
+                area,
+                &mut list.state,
+            );
+        }
     }
 
     pub(super) fn load(&mut self, db: &Pdg, view: View) -> PdgResult<()> {
-        if view == View::Matches {
-            if self.has_matches() {
-                self.view = view;
-                self.lines.clear();
-                self.scroll = 0;
+        if view.is_list() {
+            if view == View::Matches && !self.has_matches() {
+                return Ok(());
             }
+            if view == View::Links && self.links.is_none() {
+                self.links = Some(linked_entries(db, &self.entry)?);
+            }
+            self.view = view;
+            self.lines.clear();
+            self.scroll = 0;
             return Ok(());
         }
         let mut lines = vec![
@@ -256,6 +284,76 @@ impl Detail {
         self.scroll = 0;
         Ok(())
     }
+}
+
+struct EntryLink {
+    pdgid: String,
+    description: String,
+    relation: Option<&'static str>,
+}
+
+impl EntryLink {
+    fn from_entry(entry: PdgIdEntry, relation: &'static str) -> Self {
+        Self {
+            pdgid: entry.pdgid,
+            description: entry.description,
+            relation: Some(relation),
+        }
+    }
+}
+
+#[derive(Default)]
+struct EntryList {
+    entries: Vec<EntryLink>,
+    state: ListState,
+}
+
+impl EntryList {
+    fn new(entries: Vec<EntryLink>) -> Self {
+        let state = ListState::default().with_selected((!entries.is_empty()).then_some(0));
+        Self { entries, state }
+    }
+
+    fn navigate(&mut self, code: KeyCode, page: u16) {
+        let Some(last) = self.entries.len().checked_sub(1) else {
+            return;
+        };
+        let selected = self.state.selected().unwrap_or_default();
+        let index = match code {
+            KeyCode::Up => selected.saturating_sub(1),
+            KeyCode::Down => selected.saturating_add(1).min(last),
+            KeyCode::PageUp => selected.saturating_sub(usize::from(page)),
+            KeyCode::PageDown => selected.saturating_add(usize::from(page)).min(last),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            _ => return,
+        };
+        self.state.select(Some(index));
+    }
+}
+
+fn linked_entries(db: &Pdg, entry: &PdgIdEntry) -> PdgResult<EntryList> {
+    let mut links = Vec::new();
+    if let Some(parent) = &entry.parent_pdgid
+        && let Some(parent) = db.pdgid(parent)?
+    {
+        links.push(EntryLink::from_entry(parent, "Parent"));
+    }
+    links.extend(
+        db.children_for_pdgid(&entry.pdgid)?
+            .into_iter()
+            .map(|child| EntryLink::from_entry(child, "Child")),
+    );
+    links.extend(
+        db.mapped_entries_for_pdgid(&entry.pdgid)?
+            .into_iter()
+            .map(|related| EntryLink::from_entry(related, "Related")),
+    );
+    let mut seen = HashSet::new();
+    links.retain(|link| {
+        link.pdgid != entry.pdgid && seen.insert((link.relation, link.pdgid.clone()))
+    });
+    Ok(EntryList::new(links))
 }
 
 fn append_details(lines: &mut Vec<Line<'static>>, details: &EntryDetails<'_>) {
@@ -354,4 +452,3 @@ fn append_reference(lines: &mut Vec<Line<'static>>, reference: &PdgReference) {
         )));
     }
 }
-use std::collections::HashSet;
