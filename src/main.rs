@@ -250,7 +250,7 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
     name = "pdg",
     version,
     about = "Search the Particle Data Group database",
-    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --decays-to KS,KS --charge 0\n  pdg find --text 'form factors'\n  pdg show 'pi+'\n  pdg completions zsh"
+    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --decays-to KS,KS --charge 0\n  pdg find --text 'form factors'\n  pdg show f0980\n  pdg completions zsh"
 )]
 struct Cli {
     #[command(flatten)]
@@ -327,7 +327,7 @@ struct FindCommand {
     /// Use an edition available in this file for numeric properties, such as 2024.
     #[arg(long, conflicts_with = "text")]
     edition: Option<String>,
-    /// Search query. Particle names support aliases, common notation, and typos.
+    /// Search query. Particle names support aliases, resonance shorthand, and typos.
     query: Option<String>,
     #[command(flatten, next_help_heading = "Output options")]
     output: SearchOutput,
@@ -337,10 +337,10 @@ struct FindCommand {
 
 #[derive(Parser)]
 #[command(
-    after_help = "Examples:\n  pdg show 'pi+'\n  pdg show --mcid -211 --view mass\n  pdg show M009 --view decays\n  pdg show S008M --view measurements"
+    after_help = "Examples:\n  pdg show f0980\n  pdg show a1320+\n  pdg show --mcid -211 --view mass\n  pdg show M009 --view decays\n  pdg show S008M --view measurements"
 )]
 struct ShowCommand {
-    /// PDG database ID, particle name, or exact alias.
+    /// PDG database ID, particle name, or alias. A unique close match also resolves.
     #[arg(required_unless_present = "mcid")]
     target: Option<String>,
     /// Look up a particle by signed Monte Carlo ID.

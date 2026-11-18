@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     DecayChannelMatch, OwnedDecayChannelMatch, ParticleFilterHit, ParticleSearchQuery,
-    ParticleSummary, Pdg, PdgParticle, PdgResult,
+    ParticleSummary, Pdg, PdgError, PdgItemType, PdgParticle, PdgResult,
 };
 
 /// How a particle's name or alias matched a ranked search query.
@@ -14,12 +14,20 @@ pub enum ParticleMatchKind {
     ExactName,
     /// The normalized query equals a normalized PDG or common alias.
     ExactAlias,
+    /// The query uses resonance shorthand, with optional parentheses, index, or charge.
+    Resonance,
     /// The normalized query matches the beginning of a name or alias.
     Prefix,
     /// The normalized query appears within the canonical name.
     Substring,
     /// A name or alias matches after correcting a single letter edit or transposition.
     Typo,
+}
+
+impl ParticleMatchKind {
+    pub(super) const fn is_direct(self) -> bool {
+        matches!(self, Self::ExactName | Self::ExactAlias | Self::Resonance)
+    }
 }
 
 /// A particle and the spelling that produced its best search match.
@@ -69,8 +77,9 @@ impl Pdg {
     /// Finds particles by name or alias, subject to the supplied filters.
     ///
     /// Matching accepts common Greek letters and subscript and superscript spellings.
-    /// Exact names rank first, followed by exact aliases, prefixes, substrings, and
-    /// typo matches. Typo matching requires at least four letters in the query and
+    /// Exact names rank first, followed by exact aliases, resonance shorthand,
+    /// prefixes, substrings, and typo matches. For example, `f0980` and `f980`
+    /// match `f_0(980)0`. Typo matching requires at least four letters in the query and
     /// preserves digits, signs, and antiparticle markers. Ties prefer shorter
     /// canonical names, then the database's PDG ID and name ordering. A query
     /// that is empty after normalization returns no hits.
@@ -113,14 +122,7 @@ impl Pdg {
                     particle,
                     matching_decays,
                 } = hit;
-                let aliases = aliases_for_name(&aliases, &particle.name);
-                let (kind, matched_name) = std::iter::once((particle.name.as_str(), false))
-                    .chain(aliases.map(|alias| (alias, true)))
-                    .filter_map(|(spelling, is_alias)| {
-                        match_kind(&query, &normalize_name(spelling), is_alias)
-                            .map(|kind| (kind, spelling))
-                    })
-                    .min_by_key(|(kind, spelling)| (*kind, spelling.len(), *spelling))?;
+                let (kind, matched_name) = best_name_match(&query, &particle.name, &aliases)?;
                 let matched_name = matched_name.to_owned();
                 Some(ParticleSearchHit {
                     particle,
@@ -136,44 +138,18 @@ impl Pdg {
 
     pub(super) fn resolve_decay_names(&self, states: Vec<String>) -> PdgResult<Vec<Vec<String>>> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT name FROM pdgitem WHERE item_type NOT IN ('A', 'S', 'W') ORDER BY name",
+            "SELECT DISTINCT name, item_type FROM pdgitem WHERE item_type NOT IN ('A', 'S', 'W') ORDER BY name",
         )?;
         let names = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, PdgItemType>(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         let aliases = self.particle_aliases()?;
-        Ok(states
+        states
             .into_iter()
-            .map(|state| {
-                let spelling = state.trim();
-                // Preserve exact PDG item names before folding case or accepting aliases.
-                if names.iter().any(|name| name == spelling) {
-                    return vec![spelling.to_owned()];
-                }
-                let normalized = normalize_name(spelling);
-                let exact = names
-                    .iter()
-                    .filter(|name| normalize_name(name) == normalized)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if !exact.is_empty() {
-                    return exact;
-                }
-                let resolved = names
-                    .iter()
-                    .filter(|name| {
-                        aliases_for_name(&aliases, name)
-                            .any(|alias| normalize_name(alias) == normalized)
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if resolved.is_empty() {
-                    vec![spelling.to_owned()]
-                } else {
-                    resolved
-                }
-            })
-            .collect())
+            .map(|state| resolve_decay_name(state.trim(), &names, &aliases))
+            .collect()
     }
 
     fn particle_aliases(&self) -> PdgResult<HashMap<String, Vec<String>>> {
@@ -202,6 +178,85 @@ impl Pdg {
         }
         Ok(aliases)
     }
+}
+
+fn resolve_decay_name(
+    spelling: &str,
+    names: &[(String, PdgItemType)],
+    aliases: &HashMap<String, Vec<String>>,
+) -> PdgResult<Vec<String>> {
+    // Exact PDG decay labels include groups, multiplets, and descriptive final states.
+    let query = normalize_name(spelling);
+    if query.is_empty() || names.iter().any(|(name, _)| name == spelling) {
+        return Ok(vec![spelling.to_owned()]);
+    }
+    let mut exact = names
+        .iter()
+        .filter(|(name, _)| normalize_name(name) == query)
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    exact.dedup();
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+
+    let mut matches = names
+        .iter()
+        .filter(|(_, item_type)| *item_type == PdgItemType::Particle)
+        .filter_map(|(name, _)| {
+            best_name_match(&query, name, aliases).map(|(kind, _)| (kind, name))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    let Some(&(kind, _)) = matches.first() else {
+        return Ok(vec![spelling.to_owned()]);
+    };
+    if kind.is_direct() {
+        matches.retain(|(candidate_kind, _)| *candidate_kind == kind);
+    }
+    let candidates = matches
+        .into_iter()
+        .map(|(_, name)| name.clone())
+        .collect::<Vec<_>>();
+    if kind == ParticleMatchKind::ExactAlias {
+        return Ok(candidates);
+    }
+    if kind == ParticleMatchKind::Resonance
+        && let Some((stem, _)) = candidates[0].rsplit_once(')')
+        && let Some(group) = candidates[0].get(..=stem.len())
+        && matches_resonance(&query, &normalize_name(group))
+        && candidates.iter().all(|candidate| {
+            candidate
+                .rsplit_once(')')
+                .is_some_and(|(prefix, _)| prefix == stem)
+        })
+        && names
+            .iter()
+            .any(|(name, item_type)| *item_type == PdgItemType::Group && name == group)
+    {
+        return Ok(vec![group.to_owned()]);
+    }
+    if candidates.len() == 1 {
+        Ok(candidates)
+    } else {
+        Err(PdgError::AmbiguousDecayState {
+            name: spelling.to_owned(),
+            candidates,
+        })
+    }
+}
+
+fn best_name_match<'a>(
+    query: &str,
+    name: &'a str,
+    aliases: &'a HashMap<String, Vec<String>>,
+) -> Option<(ParticleMatchKind, &'a str)> {
+    std::iter::once((name, false))
+        .chain(aliases_for_name(aliases, name).map(|alias| (alias, true)))
+        .filter_map(|(spelling, is_alias)| {
+            match_kind(query, &normalize_name(spelling), is_alias).map(|kind| (kind, spelling))
+        })
+        .min_by_key(|(kind, spelling)| (*kind, spelling.len(), *spelling))
 }
 
 fn aliases_for_name<'a>(
@@ -235,7 +290,7 @@ fn common_aliases(name: &str) -> &'static [&'static str] {
 }
 
 fn match_kind(query: &str, spelling: &str, is_alias: bool) -> Option<ParticleMatchKind> {
-    use ParticleMatchKind::{ExactAlias, ExactName, Prefix, Substring, Typo};
+    use ParticleMatchKind::{ExactAlias, ExactName, Prefix, Resonance, Substring, Typo};
 
     if query == spelling {
         return Some(if is_alias { ExactAlias } else { ExactName });
@@ -245,6 +300,9 @@ fn match_kind(query: &str, spelling: &str, is_alias: bool) -> Option<ParticleMat
     let query_charge = &query[charge(query)..];
     if !query_charge.is_empty() && query_charge != &spelling[charge(spelling)..] {
         return None;
+    }
+    if matches_resonance(query, spelling) {
+        return Some(Resonance);
     }
     if spelling.starts_with(query) && (!is_alias || query.chars().count() >= 2) {
         return Some(Prefix);
@@ -261,6 +319,38 @@ fn match_kind(query: &str, spelling: &str, is_alias: bool) -> Option<ParticleMat
         && has_antiparticle_marker(query) == has_antiparticle_marker(spelling)
         && single_letter_typo(query, spelling))
     .then_some(Typo)
+}
+
+fn matches_resonance(query: &str, spelling: &str) -> bool {
+    let Some((stem, mass_and_charge)) = spelling.rsplit_once('(') else {
+        return false;
+    };
+    let Some((mass, charge)) = mass_and_charge.split_once(')') else {
+        return false;
+    };
+    // Only a numeric resonance label can be compacted. Preserve an explicit charge
+    // or antiparticle marker, and require the entire numeric label to match.
+    if stem.is_empty()
+        || mass.is_empty()
+        || !mass.bytes().all(|byte| byte.is_ascii_digit())
+        || !matches!(charge, "" | "0" | "+" | "-" | "++" | "--")
+    {
+        return false;
+    }
+    let family = stem.trim_end_matches(|ch: char| ch.is_ascii_digit());
+    [stem, family].into_iter().any(|prefix| {
+        if prefix.is_empty() {
+            return false;
+        }
+        query.strip_prefix(prefix).is_some_and(|rest| {
+            let suffix = rest.strip_prefix(mass).or_else(|| {
+                rest.strip_prefix('(')?
+                    .strip_prefix(mass)?
+                    .strip_prefix(')')
+            });
+            suffix.is_some_and(|suffix| suffix.is_empty() || suffix == charge)
+        })
+    })
 }
 
 fn has_antiparticle_marker(name: &str) -> bool {

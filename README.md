@@ -26,6 +26,8 @@ pdg find --class lepton --limit 5
 pdg find --decays-to 'KS,KS' --charge 0
 pdg find --text 'form factors'
 pdg show 'pi+'
+pdg show f0980
+pdg show a1320+
 pdg show --mcid -211 --view mass
 pdg show M009 --view decays
 pdg show S008245
@@ -36,7 +38,9 @@ Use `pdg find --text 'form fact*'` to match a partial term. When a whole-word qu
 
 The first text search builds a temporary index for that database connection. `pdg find --text` returns 20 ranked hits by default. Use `--limit` to request a different count or `--all` for every match. Rust callers can use `Pdg::search_text_with_limit`.
 
-`pdg show` accepts a particle name or exact alias and any PDG database string ID, including data IDs like `S008M` and section IDs like `S008245`. Pass `--mcid` for a signed Monte Carlo ID. A shared PDG ID such as `M009` displays all particle variants. JSON reports them in `variants` with `particle` set to `null`. Ambiguous names and close matches are listed on stderr. In Rust, `Pdg::lookup` takes a `LookupSelector` and returns a `Lookup` outcome.
+`pdg show` accepts particle names and aliases, including a unique partial match or typo correction, as well as PDG database IDs such as `S008M` and `S008245`. Pass `--mcid` for a signed Monte Carlo ID. A shared PDG ID such as `M009` displays all particle variants. JSON reports them in `variants` with `particle` set to `null`. If several candidates are still possible, `show` lists the choices on stderr. In Rust, `Pdg::lookup` takes a `LookupSelector` and returns a `Lookup` outcome.
+
+Shells interpret unquoted parentheses before running `pdg`. Quote the full name, as in `pdg show 'f0(980)'`, or use the shorthand `pdg show f0980` or `pdg show f980`. The resonance number must match. `pdg show a21320` and `pdg show a1320` open the shared `a_2(1320)` listing. Add a charge, as in `a1320+` or `a13200`, to select one variant. If a shorthand spans distinct listings, include the index or use a PDG ID. For example, `f2300` matches both `f_2(2300)0` and `f_4(2300)0`.
 
 Use `pdg show TARGET --view VIEW` to select details in either terminal or JSON output.
 
@@ -55,11 +59,11 @@ For scripts, replace `--summary` with the default invocation or `--view overview
 
 Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime filters require an overlapping property interval by default. Use `--include-unknown-properties` to also include particles without a comparable value for a requested property. `--decay-contains` counts repeated products within one decay mode. For example, `--decay-contains 'pi+,pi+'` requires two `pi+` products in the same mode.
 
-Decay filters accept exact aliases and common particle notation in their default inclusive mode. `KS`, `Kₛ⁰`, and `K(S)0` resolve to the same neutral kaon before PDG family expansion. `--decay-expansion literal` compares the product spellings as recorded in the database.
+Decay filters accept aliases, resonance shorthand, and unique close matches in their default inclusive mode. For example, `pdg find --decay-contains f980` searches for the recorded `f_0(980)` group. `KS`, `Kₛ⁰`, and `K(S)0` resolve to the same neutral kaon before PDG family expansion. `--decay-expansion literal` compares the product spellings as recorded in the database.
 
 Decay-filtered results list the matching PDG channels with their IDs and recorded descriptions. A `KS,KS` search can match a channel listed as `K Kbar` through family expansion. Use `pdg show M003.1` to inspect that listing. JSON includes a `matching_decays` array with the channel description, product names, multiplicities, and which state filters matched. In Rust, `Pdg::search_particle_hits` and `Pdg::find_particles` expose the same matches.
 
-Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
+Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank first, followed by resonance shorthand, partial matches, and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
 Pass `--db-path FILE` to open an existing local SQLite database read-only. The flag takes precedence over `PDG_RS_DB_PATH`. With neither override, `pdg` uses the pinned database in the cache, which you can relocate with `PDG_RS_CACHE_DIR`.
 
