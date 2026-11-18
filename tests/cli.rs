@@ -102,7 +102,7 @@ fn db_path_prints_cache_path() {
     cmd.args(["db", "path"])
         .assert()
         .success()
-        .stdout(contains("pdgall-2025-v0.2.2.sqlite"));
+        .stdout(contains("pdgall-2026.0.sqlite"));
 }
 
 #[test]
@@ -112,7 +112,40 @@ fn db_status_reports_database_override() {
         .assert()
         .success()
         .stdout(contains("database override:"))
-        .stdout(contains("pdgall-2025-v0.2.2.sqlite"));
+        .stdout(contains("pdgall-2025-v0.2.2.sqlite"))
+        .stdout(contains("database edition: 2025"))
+        .stdout(contains("data release timestamp:"))
+        .stdout(contains("available numeric editions: 2025, 2024"));
+}
+
+#[test]
+fn find_can_choose_an_available_numeric_edition() {
+    let result = pdg_command()
+        .args(["find", "pi+", "--edition", "2024", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(value[0]["mass"]["edition"], "2024");
+
+    pdg_command()
+        .args(["find", "pi+", "--edition", "1900"])
+        .assert()
+        .code(1)
+        .stderr(contains("PDG edition \"1900\" is unavailable"))
+        .stderr(contains("2025, 2024"));
+}
+
+#[test]
+fn show_reports_selected_edition_and_database_release() {
+    let result = pdg_command()
+        .args(["show", "S008M", "--edition", "2024", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(value["edition"], "2024");
+    assert_eq!(value["database"]["edition"], "2025");
+    assert!(value["database"]["data_release_timestamp"].is_string());
+    assert_eq!(value["data"][0]["edition"], "2024");
 }
 
 #[test]

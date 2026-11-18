@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     fs::{self, File},
     io::{Read, Write},
@@ -6,18 +7,80 @@ use std::{
 };
 
 use directories::ProjectDirs;
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::{PdgError, PdgResult};
 
-const DATABASE_FILENAME: &str = "pdgall-2025-v0.2.2.sqlite";
-const DATABASE_URL: &str = "https://pdg.lbl.gov/2025/api/pdgall-2025-v0.2.2.sqlite";
-const DATABASE_SHA256: &str = "0126ff52a0a8de8d683d56ee9eb10f7366f5f3b9df7ae4a25e2c269026d8566d";
-const DATABASE_SIZE: u64 = 63_967_232;
+const DATABASE_FILENAME: &str = "pdgall-2026.0.sqlite";
+const DATABASE_URL: &str = "https://pdg.lbl.gov/2026/api/pdgall-2026.0.sqlite";
+const DATABASE_SHA256: &str = "c82dab0c0a7c5264f23508066cabb8df9eacc1dbfc83c8d20fade6053394ba8a";
+const DATABASE_SIZE: u64 = 67_457_024;
 const ENV_DATABASE_PATH: &str = "PDG_RS_DB_PATH";
 const ENV_CACHE_DIR: &str = "PDG_RS_CACHE_DIR";
 const ENV_OFFLINE: &str = "PDG_RS_OFFLINE";
+
+/// Release metadata for the opened PDG database file.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct PdgDatabaseInfo {
+    /// The file's declared edition, or its newest numeric edition if metadata is absent.
+    pub edition: String,
+    /// PDG database schema version, when recorded.
+    pub schema_version: Option<String>,
+    /// PDG release identifier, when recorded.
+    pub data_release: Option<String>,
+    /// PDG release timestamp as stored in the file.
+    pub data_release_timestamp: Option<String>,
+    /// Citation for the database release, when recorded.
+    pub citation: Option<String>,
+}
+
+pub fn read_database_info(conn: &Connection) -> PdgResult<PdgDatabaseInfo> {
+    let has_info: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'pdginfo')",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut metadata = if has_info {
+        let mut stmt = conn.prepare(
+            "SELECT name, value FROM pdginfo WHERE value IS NOT NULL
+             AND name IN ('edition', 'schema_version', 'data_release', 'data_release_timestamp', 'citation')",
+        )?;
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?
+    } else {
+        HashMap::new()
+    };
+    let edition = match metadata
+        .remove("edition")
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(edition) => edition,
+        None => available_editions(conn)?
+            .into_iter()
+            .next()
+            .ok_or(PdgError::DatabaseEditionMissing)?,
+    };
+    Ok(PdgDatabaseInfo {
+        edition,
+        schema_version: metadata.remove("schema_version"),
+        data_release: metadata.remove("data_release"),
+        data_release_timestamp: metadata.remove("data_release_timestamp"),
+        citation: metadata.remove("citation"),
+    })
+}
+
+pub fn available_editions(conn: &Connection) -> PdgResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT edition FROM pdgdata WHERE edition IS NOT NULL AND trim(edition) <> '' ORDER BY edition DESC",
+    )?;
+    Ok(stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
 
 pub fn ensure_database() -> PdgResult<PathBuf> {
     if let Some(path) = configured_database_path() {

@@ -16,7 +16,8 @@ cargo install pdg-rs
 ## Usage
 
 ### CLI
-This crate provides a `pdg` binary for searching the PDG database. The first command that needs the default database downloads and verifies it in your OS-specific cache directory:
+This crate provides a `pdg` binary for searching the PDG database. The first command that needs the default database downloads and verifies `pdgall-2026.0.sqlite` in your OS-specific cache directory. [Official PDG database downloads](https://pdg.lbl.gov/2026/api/index.html)
+
 ```bash
 pdg find 'K_S^0' --limit 5
 pdg find 'X(3872)'
@@ -38,6 +39,8 @@ Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime
 Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
 Use `pdg db fetch`, `pdg db status`, `pdg db path`, and `pdg db clear` to manage the cached database. Set `PDG_RS_DB_PATH` to open a specific `SQLite` database file, `PDG_RS_CACHE_DIR` to choose a cache directory, or pass `--offline` to require an existing cached database.
+
+Numeric data and property filters default to the opened file's edition. Run `pdg db status` to see its release and available numeric editions. Use `pdg show 'pi+' --edition 2024` or `pdg find --mass 100..150 --edition 2024` for historical values. Rust callers can use `Pdg::open()?.with_edition("2024")?`. The particle catalogue, decay listings, text, and measurements come from the opened file's release. JSON from `show` reports the selected `edition` and the release metadata in `database`.
 
 ### Get information about a specific particle:
 ```rust,no_run
@@ -447,18 +450,19 @@ Currently this is just a working example. I have some plans to expand the interf
 - Possibly a Python interface, although I'd have to ensure there is some actual value to it beyond a clone of the [`particle`](https://pypi.org/project/particle/) library. I think right now it could be justified given that `particle` is mainly a curated selection raw particle information while `pdg-rs` incorporates the entire database of measurements and data not specific to any single particle.
 
 ## Citations
-When using data from `pdg-rs`, please cite:
+When using data from `pdg-rs`, cite the PDG release you opened. The default download uses the [2026 Review of Particle Physics](https://pdg.lbl.gov/2026/list_of_RPP_publications.html).
+
 ```bibtex
-@article{ParticleDataGroup:2024cfk,
-    author = "Navas, S. and others",
+@article{pdg2026,
+    author = "Takahashi, F. and others",
     collaboration = "Particle Data Group",
     title = "{Review of particle physics}",
-    doi = "10.1103/PhysRevD.110.030001",
-    journal = "Phys. Rev. D",
-    volume = "110",
-    number = "3",
-    pages = "030001",
-    year = "2024"
+    doi = "10.1142/S0217751X26300115",
+    journal = "Int. J. Mod. Phys. A",
+    volume = "41",
+    number = "22",
+    pages = "2630011",
+    year = "2026"
 }
 ```
 
