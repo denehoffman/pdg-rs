@@ -112,6 +112,27 @@ fn search_particles_matches_common_aliases() {
 }
 
 #[test]
+fn search_particles_accepts_database_aliases_and_fuzzy_queries() {
+    for (query, name) in [("X(3872)", "chi_c1(3872)"), ("π⁺", "pi+"), ("prtoon", "p")] {
+        let mut cmd = pdg_command();
+        let result = cmd
+            .args([
+                "search",
+                "particles",
+                query,
+                "--limit",
+                "1",
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success();
+        let hits: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert_eq!(hits[0]["name"], name, "{query}");
+    }
+}
+
+#[test]
 fn search_particles_ranks_exact_short_names_first() {
     let mut cmd = pdg_command();
     let stdout = String::from_utf8(

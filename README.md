@@ -20,12 +20,16 @@ This crate provides a `pdg` binary for searching the PDG database. The first com
 ```bash
 pdg show S008245
 pdg show M036 --summary
-pdg search particles K --limit 5
+pdg search particles 'K_S^0' --limit 5
+pdg search particles 'X(3872)'
+pdg search particles prtoon
 pdg search text "form factors"
 pdg search particles --class lepton --limit 5
 pdg search particles --decays-to K\(S\)0,K\(S\)0 --charge 0
 ```
 `pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Monte Carlo particle IDs are exposed as `mcid` in the Rust API and can be used as a particle search filter with `pdg search particles --mcid 211`.
+
+Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
 Use `pdg db fetch`, `pdg db status`, `pdg db path`, and `pdg db clear` to manage the cached database. Set `PDG_RS_DB_PATH` to open a specific `SQLite` database file, `PDG_RS_CACHE_DIR` to choose a cache directory, or pass `--offline` to require an existing cached database.
 

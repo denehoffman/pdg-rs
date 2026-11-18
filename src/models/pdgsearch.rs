@@ -1,6 +1,7 @@
 use crate::{AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleType};
 
-/// Builder for particle searches run by [`crate::Pdg::search_particles`].
+/// Builder for particle searches run by [`crate::Pdg::search_particles`] and
+/// ranked name searches run by [`crate::Pdg::find_particles`].
 ///
 /// Filters are combined with logical `AND`.
 ///
