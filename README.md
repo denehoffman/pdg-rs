@@ -23,7 +23,7 @@ pdg find 'K_S^0' --limit 5
 pdg find 'X(3872)'
 pdg find prtoon
 pdg find --class lepton --limit 5
-pdg find --decays-to 'K(S)0,K(S)0' --charge 0
+pdg find --decays-to 'KS,KS' --charge 0
 pdg find --text 'form factors'
 pdg show 'pi+' --summary
 pdg show --mcid -211
@@ -39,6 +39,8 @@ The first text search builds a temporary index for that database connection. `pd
 `pdg show` accepts a particle name or exact alias and any PDG database string ID, including data IDs like `S008M` and section IDs like `S008245`. Pass `--mcid` for a signed Monte Carlo ID. A shared PDG ID such as `M009` displays all particle variants. JSON reports them in `variants` with `particle` set to `null`. Ambiguous names and close matches are listed on stderr. In Rust, `Pdg::lookup` takes a `LookupSelector` and returns a `Lookup` outcome.
 
 Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime filters require an overlapping property interval by default. Use `--include-unknown-properties` to also include particles without a comparable value for a requested property. `--decay-contains` counts repeated products within one decay mode. For example, `--decay-contains 'pi+,pi+'` requires two `pi+` products in the same mode.
+
+Decay filters accept exact aliases and common particle notation in their default inclusive mode. `KS`, `Kₛ⁰`, and `K(S)0` resolve to the same neutral kaon before PDG family expansion. `--decay-expansion literal` compares the product spellings as recorded in the database.
 
 Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 

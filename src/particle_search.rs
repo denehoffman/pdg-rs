@@ -73,12 +73,7 @@ impl Pdg {
         let mut hits = particles
             .into_iter()
             .filter_map(|particle| {
-                let aliases = aliases
-                    .get(&particle.name)
-                    .into_iter()
-                    .flatten()
-                    .map(String::as_str)
-                    .chain(common_aliases(&particle.name).iter().copied());
+                let aliases = aliases_for_name(&aliases, &particle.name);
                 let (kind, matched_name) = std::iter::once((particle.name.as_str(), false))
                     .chain(aliases.map(|alias| (alias, true)))
                     .filter_map(|(spelling, is_alias)| {
@@ -96,6 +91,48 @@ impl Pdg {
             .collect::<Vec<_>>();
         hits.sort_by_key(|hit| (hit.kind, hit.particle.name.chars().count()));
         Ok(hits)
+    }
+
+    pub(super) fn resolve_decay_names(&self, states: Vec<String>) -> PdgResult<Vec<Vec<String>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT name FROM pdgitem WHERE item_type NOT IN ('A', 'S', 'W') ORDER BY name",
+        )?;
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let aliases = self.particle_aliases()?;
+        Ok(states
+            .into_iter()
+            .map(|state| {
+                let spelling = state.trim();
+                // Preserve exact PDG item names before folding case or accepting aliases.
+                if names.iter().any(|name| name == spelling) {
+                    return vec![spelling.to_owned()];
+                }
+                let normalized = normalize_name(spelling);
+                let exact = names
+                    .iter()
+                    .filter(|name| normalize_name(name) == normalized)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !exact.is_empty() {
+                    return exact;
+                }
+                let resolved = names
+                    .iter()
+                    .filter(|name| {
+                        aliases_for_name(&aliases, name)
+                            .any(|alias| normalize_name(alias) == normalized)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if resolved.is_empty() {
+                    vec![spelling.to_owned()]
+                } else {
+                    resolved
+                }
+            })
+            .collect())
     }
 
     fn particle_aliases(&self) -> PdgResult<HashMap<String, Vec<String>>> {
@@ -124,6 +161,18 @@ impl Pdg {
         }
         Ok(aliases)
     }
+}
+
+fn aliases_for_name<'a>(
+    aliases: &'a HashMap<String, Vec<String>>,
+    name: &str,
+) -> impl Iterator<Item = &'a str> {
+    aliases
+        .get(name)
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(common_aliases(name).iter().copied())
 }
 
 fn common_aliases(name: &str) -> &'static [&'static str] {

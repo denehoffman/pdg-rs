@@ -540,6 +540,36 @@ fn find_particles_accepts_decay_filters() {
 }
 
 #[test]
+fn find_decay_filters_accept_neutral_kaon_aliases() {
+    let query = |final_state: &str| {
+        pdg_command()
+            .args([
+                "find",
+                "--class",
+                "meson",
+                "--charge",
+                "0",
+                "--mass",
+                "900..2000",
+                "--decays-to",
+                final_state,
+                "--all",
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let canonical = query("K(S)0,K(S)0");
+    assert_ne!(canonical, b"[]\n");
+    assert_eq!(query("KS,KS"), canonical);
+    assert_eq!(query("Kₛ⁰, KS"), canonical);
+}
+
+#[test]
 fn find_particles_uses_section_derived_properties() {
     let mut cmd = pdg_command();
     cmd.args([

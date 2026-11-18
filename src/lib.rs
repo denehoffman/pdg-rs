@@ -728,9 +728,23 @@ impl Pdg {
         states: Vec<String>,
         expansion: DecayStateExpansion,
     ) -> PdgResult<Vec<Vec<String>>> {
-        states
+        if expansion == DecayStateExpansion::Literal || states.is_empty() {
+            return Ok(states.into_iter().map(|state| vec![state]).collect());
+        }
+        self.resolve_decay_names(states)?
             .into_iter()
-            .map(|state| self.expand_decay_state_names(state, expansion))
+            .map(|names| {
+                let mut expanded = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for name in names {
+                    expanded.extend(
+                        self.expand_decay_state_names(&name)?
+                            .into_iter()
+                            .filter(|item| seen.insert(item.clone())),
+                    );
+                }
+                Ok(expanded)
+            })
             .collect()
     }
 
@@ -827,17 +841,9 @@ impl Pdg {
             .any(|products| decay_products_match(requested, products, mode)))
     }
 
-    fn expand_decay_state_names(
-        &self,
-        name: String,
-        expansion: DecayStateExpansion,
-    ) -> PdgResult<Vec<String>> {
-        if expansion == DecayStateExpansion::Literal {
-            return Ok(vec![name]);
-        }
-
-        let mut names = vec![name.clone()];
-        let mut seen = std::collections::HashSet::from([name.clone()]);
+    fn expand_decay_state_names(&self, name: &str) -> PdgResult<Vec<String>> {
+        let mut names = vec![name.to_owned()];
+        let mut seen = std::collections::HashSet::from([name.to_owned()]);
         let mut parents = Vec::new();
 
         let mut stmt = self.conn.prepare(
@@ -855,7 +861,7 @@ impl Pdg {
             ORDER BY is_parent, sort",
         )?;
         for (relative, is_parent) in stmt
-            .query_map([&name], |row| {
+            .query_map([name], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -868,7 +874,7 @@ impl Pdg {
             }
         }
 
-        if self.is_antiparticle_item(&name)? || self.is_neutral_meson_particle(&name)? {
+        if self.is_antiparticle_item(name)? || self.is_neutral_meson_particle(name)? {
             for parent in parents {
                 let alias = format!("{parent}bar");
                 if self.decay_state_exists(&alias)? && seen.insert(alias.clone()) {
@@ -1550,13 +1556,30 @@ mod tests {
     #[test]
     fn charged_decay_states_do_not_expand_to_antiparticle_siblings() {
         let db = test_pdg();
-        let names = db
-            .expand_decay_state_names("pi+".to_string(), DecayStateExpansion::Inclusive)
-            .unwrap();
+        let names = db.expand_decay_state_names("pi+").unwrap();
 
         assert!(names.contains(&"pi+".to_string()));
         assert!(names.contains(&"pi".to_string()));
         assert!(!names.contains(&"pi-".to_string()));
+    }
+
+    #[test]
+    fn decay_names_share_exact_particle_aliases_and_normalization() {
+        let db = test_pdg();
+        let supplied = ["KS", "Kₛ⁰", "K(S)0", "proton", "π⁺", "prtoon"];
+        let resolved = db
+            .resolve_decay_names(supplied.map(str::to_owned).to_vec())
+            .unwrap();
+        for (actual, expected) in resolved
+            .iter()
+            .zip(["K(S)0", "K(S)0", "K(S)0", "p", "pi+", "prtoon"])
+        {
+            assert_eq!(actual, &[expected]);
+        }
+        let literal = db
+            .expand_decay_states(vec!["KS".into()], DecayStateExpansion::Literal)
+            .unwrap();
+        assert_eq!(literal, [vec!["KS"]]);
     }
 
     #[test]
