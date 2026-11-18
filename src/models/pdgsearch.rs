@@ -1,4 +1,6 @@
-use crate::{AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleType};
+use crate::{
+    AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleType, PdgError, PdgResult,
+};
 
 /// Builder for particle searches run by [`crate::Pdg::search_particles`] and
 /// ranked name searches run by [`crate::Pdg::find_particles`].
@@ -25,6 +27,7 @@ use crate::{AngularMomentum, Charge, Isospin, Parity, ParticleClass, ParticleTyp
 #[derive(Clone, Debug, Default)]
 pub struct ParticleSearchQuery {
     pub(crate) name_contains: Option<String>,
+    pub(crate) mcid: Option<isize>,
     pub(crate) particle_class: Option<ParticleClass>,
     pub(crate) particle_type: Option<ParticleType>,
     pub(crate) charge: Option<Charge>,
@@ -36,6 +39,7 @@ pub struct ParticleSearchQuery {
     pub(crate) mass_range_mev: Option<(f64, f64)>,
     pub(crate) width_range_mev: Option<(f64, f64)>,
     pub(crate) lifetime_range_seconds: Option<(f64, f64)>,
+    pub(crate) include_unknown_properties: bool,
     pub(crate) decays_to: DecayFilter,
     pub(crate) decays_from: Vec<String>,
     pub(crate) decay_state_expansion: DecayStateExpansion,
@@ -90,6 +94,13 @@ impl ParticleSearchQuery {
     #[must_use]
     pub fn name_contains(mut self, value: impl Into<String>) -> Self {
         self.name_contains = Some(value.into());
+        self
+    }
+
+    /// Filters particles by their signed Monte Carlo ID.
+    #[must_use]
+    pub const fn mcid(mut self, mcid: isize) -> Self {
+        self.mcid = Some(mcid);
         self
     }
 
@@ -183,6 +194,29 @@ impl ParticleSearchQuery {
         self
     }
 
+    /// Includes particles with no comparable value for a requested property range.
+    /// By default each requested range requires an overlapping property interval.
+    #[must_use]
+    pub const fn include_unknown_properties(mut self, include: bool) -> Self {
+        self.include_unknown_properties = include;
+        self
+    }
+
+    pub(crate) fn validate_ranges(&self) -> PdgResult<()> {
+        for (property, range) in [
+            ("mass", self.mass_range_mev),
+            ("width", self.width_range_mev),
+            ("lifetime", self.lifetime_range_seconds),
+        ] {
+            if let Some((min, max)) = range
+                && (min.is_nan() || max.is_nan() || min > max)
+            {
+                return Err(PdgError::InvalidPropertyRange { property, min, max });
+            }
+        }
+        Ok(())
+    }
+
     /// Filters particles by an exact outgoing decay state.
     ///
     /// Use [`ParticleSearchQuery::decay_contains`] to allow additional outgoing
@@ -201,6 +235,7 @@ impl ParticleSearchQuery {
     }
 
     /// Filters particles by outgoing decay products contained in a decay state.
+    /// Each occurrence of a requested product must be present in the same decay mode.
     #[must_use]
     pub fn decay_contains<I, S>(mut self, states: I) -> Self
     where

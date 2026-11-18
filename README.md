@@ -31,6 +31,8 @@ pdg show M036 --summary
 
 `pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Use `pdg find --mcid 211` to look up a particle by Monte Carlo ID.
 
+Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime filters require an overlapping property interval by default. Use `--include-unknown-properties` to also include particles without a comparable value for a requested property. `--decay-contains` counts repeated products within one decay mode. For example, `--decay-contains 'pi+,pi+'` requires two `pi+` products in the same mode.
+
 Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
 Use `pdg db fetch`, `pdg db status`, `pdg db path`, and `pdg db clear` to manage the cached database. Set `PDG_RS_DB_PATH` to open a specific `SQLite` database file, `PDG_RS_CACHE_DIR` to choose a cache directory, or pass `--offline` to require an existing cached database.

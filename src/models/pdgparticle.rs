@@ -1618,7 +1618,7 @@ mod tests {
                 .iter()
                 .any(|particle| particle.name == "D_1(2430)0")
         );
-        assert!(particles.iter().any(|particle| particle.name == "e-"));
+        assert!(!particles.iter().any(|particle| particle.name == "e-"));
     }
 
     #[test]
