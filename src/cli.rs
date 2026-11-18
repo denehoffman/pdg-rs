@@ -4,7 +4,7 @@ use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use pdg_rs::{
     DataEntry, DataType, ParticleProperty, Pdg, PdgDatabaseInfo, PdgFootnote, PdgIdEntry,
     PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgReference, PdgResult, PdgText,
-    TextSearchResult, TextSearchSource,
+    TextSearchCorrection, TextSearchParent, TextSearchResult, TextSearchSource,
 };
 use serde::Serialize;
 
@@ -273,6 +273,10 @@ impl From<&PdgMeasurementValue> for MeasurementValueDto {
 #[derive(Serialize)]
 pub(crate) struct TextSearchDto {
     pdgid: String,
+    title: Option<String>,
+    parent: Option<TextSearchParent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    correction: Option<TextSearchCorrection>,
     source: String,
     text_type: Option<String>,
     sort: Option<isize>,
@@ -292,6 +296,9 @@ impl From<&TextSearchResult> for TextSearchDto {
         };
         Self {
             pdgid: result.pdgid.clone(),
+            title: result.title.clone(),
+            parent: result.parent.clone(),
+            correction: result.correction.clone(),
             source,
             text_type,
             sort,
