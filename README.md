@@ -71,6 +71,18 @@ Pass `--db-path FILE` to open an existing local SQLite database read-only. The f
 
 Numeric data and property filters default to the opened file's edition. Run `pdg db status` to see its release and available numeric editions. Use `pdg show 'pi+' --edition 2024` or `pdg find --mass 100..150 --edition 2024` for historical values. Rust callers can use `Pdg::open()?.with_edition("2024")?`. The particle catalogue, decay listings, text, and measurements come from the opened file's release. JSON from `show` reports the selected `edition` and the release metadata in `database`.
 
+### Terminal browser
+
+```sh
+pdg tui
+pdg tui f980
+pdg tui --text 'form factors'
+```
+
+Type to search, press Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. In the detail pane, keys 1 through 5 select overview, mass, decays, measurements, and references. Key 0 returns to the matched passage for a text result. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
+
+Press `c` in the detail pane to copy the canonical name when a single particle is selected. Press `i` to copy the PDG ID. Clipboard delivery uses OSC 52 and depends on terminal support. The browser uses the same `--db-path`, `--offline`, and `--edition` options as the CLI queries. The `tui` Cargo feature is enabled by default. To build the binary without the browser, use `--no-default-features --features ratio`.
+
 ### Shell completion
 
 `pdg completions --help` lists the supported shells. Load the generated script in the current shell with one of these commands.

@@ -27,6 +27,8 @@ use pdg_rs::{
 use thiserror::Error;
 
 pub(crate) mod cli;
+#[cfg(feature = "tui")]
+mod tui;
 use cli::{ParticleDto, ShowDto, TextSearchDto, particle_table, table};
 
 #[derive(Debug, Error)]
@@ -291,8 +293,22 @@ enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Reserved for the future terminal UI.
-    Tui,
+    /// Browse particles and PDG text in the terminal.
+    #[cfg(feature = "tui")]
+    Tui(TuiCommand),
+}
+
+#[cfg(feature = "tui")]
+#[derive(Parser)]
+struct TuiCommand {
+    /// Start with this search query.
+    query: Option<String>,
+    /// Start in PDG text search mode.
+    #[arg(long)]
+    text: bool,
+    /// Use this edition for numeric data in the detail pane.
+    #[arg(long)]
+    edition: Option<String>,
 }
 
 #[derive(Parser)]
@@ -570,9 +586,8 @@ fn run() -> CliResult<()> {
             io::stdout().lock().write_all(&script)?;
             Ok(())
         }
-        Commands::Tui => Err(CliError::InvalidArgument(
-            "TUI is not implemented yet. Use `pdg find`, `pdg show`, or `pdg db`.".into(),
-        )),
+        #[cfg(feature = "tui")]
+        Commands::Tui(command) => tui::run(&command, &cli.database),
     }
 }
 

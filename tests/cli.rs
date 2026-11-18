@@ -15,19 +15,21 @@ fn pdg_command() -> Command {
 #[test]
 fn help_mentions_only_canonical_subcommands() {
     let mut cmd = pdg_command();
-    cmd.arg("--help")
+    let result = cmd
+        .arg("--help")
         .assert()
         .success()
         .stdout(contains("\n  find "))
         .stdout(contains("show"))
         .stdout(contains("db"))
-        .stdout(contains("tui"))
         .stdout(contains("completions"))
         .stdout(contains("pdg find --text 'form factors'"))
         .stdout(contains("\n  search ").not())
         .stdout(contains("  particle").not())
         .stdout(contains("  pdgid").not())
         .stdout(contains("  text").not());
+    let stdout = std::str::from_utf8(&result.get_output().stdout).unwrap();
+    assert_eq!(stdout.contains("\n  tui "), cfg!(feature = "tui"));
 }
 
 #[test]
@@ -1156,10 +1158,22 @@ fn find_text_all_overrides_an_explicit_limit() {
 }
 
 #[test]
-fn tui_stub_is_reserved() {
-    let mut cmd = pdg_command();
-    cmd.arg("tui")
+#[cfg(feature = "tui")]
+fn tui_requires_an_interactive_terminal_before_opening_the_database() {
+    pdg_command()
+        .args(["--db-path", "missing.sqlite", "tui", "f980"])
         .assert()
-        .failure()
-        .stderr(contains("TUI is not implemented yet"));
+        .code(1)
+        .stdout("")
+        .stderr(contains("requires an interactive terminal"));
+}
+
+#[test]
+#[cfg(not(feature = "tui"))]
+fn tui_command_is_optional() {
+    pdg_command()
+        .arg("tui")
+        .assert()
+        .code(2)
+        .stderr(contains("unrecognized subcommand"));
 }
