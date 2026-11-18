@@ -24,12 +24,14 @@ pdg find prtoon
 pdg find --class lepton --limit 5
 pdg find --decays-to 'K(S)0,K(S)0' --charge 0
 pdg find --text 'form factors'
+pdg show 'pi+' --summary
+pdg show --mcid -211
+pdg show M009 --summary
 pdg show S008245
-pdg show M036 --summary
 ```
 `pdg find` searches particles by default. Use `--text` to search PDG descriptions, text, and footnotes, and add `--show-full-text` to expand the snippets.
 
-`pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Use `pdg find --mcid 211` to look up a particle by Monte Carlo ID.
+`pdg show` accepts a particle name or exact alias and any PDG database string ID, including data IDs like `S008M` and section IDs like `S008245`. Pass `--mcid` for a signed Monte Carlo ID. A shared PDG ID such as `M009` displays all particle variants. JSON reports them in `variants` with `particle` set to `null`. Ambiguous names and close matches are listed on stderr. In Rust, `Pdg::lookup` takes a `LookupSelector` and returns a `Lookup` outcome.
 
 Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime filters require an overlapping property interval by default. Use `--include-unknown-properties` to also include particles without a comparable value for a requested property. `--decay-contains` counts repeated products within one decay mode. For example, `--decay-contains 'pi+,pi+'` requires two `pi+` products in the same mode.
 

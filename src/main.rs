@@ -1,12 +1,12 @@
-use std::{collections::HashSet, env, fs, path::PathBuf, str::FromStr};
+use std::{collections::HashSet, env, fs, path::PathBuf, process::ExitCode, str::FromStr};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{ColumnConstraint, ContentArrangement, Width};
 use owo_colors::OwoColorize;
 use pdg_rs::{
-    AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Parity, ParticleClass,
-    ParticleSearchQuery, ParticleType, Pdg, PdgError, PdgFootnote, PdgIdEntry, PdgMeasurement,
-    PdgMeasurementValue, PdgParticle, PdgText, TextSearchResult,
+    AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Lookup, LookupSelector,
+    Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg, PdgError, PdgFootnote,
+    PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgText, TextSearchResult,
 };
 use thiserror::Error;
 
@@ -20,8 +20,8 @@ use cli::{
 enum CliError {
     #[error(transparent)]
     Pdg(#[from] PdgError),
-    #[error("no particle found for {0}")]
-    NotFound(String),
+    #[error("{0}")]
+    Lookup(String),
     #[error("{0}")]
     InvalidArgument(String),
     #[error(transparent)]
@@ -218,7 +218,7 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
     name = "pdg",
     version,
     about = "Search the Particle Data Group database",
-    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --text 'form factors'\n  pdg show S008245"
+    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --text 'form factors'\n  pdg show 'pi+'"
 )]
 struct Cli {
     /// Require an already cached database instead of downloading it.
@@ -232,7 +232,7 @@ struct Cli {
 enum Commands {
     /// Find particles by name and properties, or search PDG text.
     Find(Box<FindCommand>),
-    /// Look up any PDG database ID, such as S008 or S008245.
+    /// Look up a particle or PDG database entry.
     Show(ShowCommand),
     /// Manage the cached PDG database.
     Db(DbCommand),
@@ -278,9 +278,16 @@ struct FindCommand {
 }
 
 #[derive(Parser)]
+#[command(
+    after_help = "Examples:\n  pdg show 'pi+'\n  pdg show --mcid -211\n  pdg show M009\n  pdg show S008245"
+)]
 struct ShowCommand {
-    /// String PDG ID, such as S008 or S008245.
-    pdgid: String,
+    /// PDG database ID, particle name, or exact alias.
+    #[arg(required_unless_present = "mcid")]
+    target: Option<String>,
+    /// Look up a particle by signed Monte Carlo ID.
+    #[arg(long, allow_hyphen_values = true, conflicts_with = "target")]
+    mcid: Option<isize>,
     #[command(flatten)]
     output: ShowOutput,
 }
@@ -395,7 +402,16 @@ enum QuantumArg<T> {
     Value(T),
 }
 
-fn main() -> CliResult<()> {
+fn main() -> ExitCode {
+    if let Err(error) = run() {
+        eprintln!("error: {error}");
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn run() -> CliResult<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
         return print_help(None);
@@ -403,7 +419,7 @@ fn main() -> CliResult<()> {
 
     match command {
         Commands::Find(command) => run_find(&command, cli.offline),
-        Commands::Show(command) => run_show(&command.pdgid, command.output, cli.offline),
+        Commands::Show(command) => run_show(&command, cli.offline),
         Commands::Db(command) => run_db(&command),
         Commands::Tui => Err(CliError::InvalidArgument(
             "TUI is not implemented yet. Use `pdg find`, `pdg show`, or `pdg db`.".into(),
@@ -523,21 +539,67 @@ fn run_text(
     }
 }
 
-fn run_show(pdgid: &str, output: ShowOutput, offline: bool) -> CliResult<()> {
+fn run_show(command: &ShowCommand, offline: bool) -> CliResult<()> {
     let db = open_pdg(offline)?;
-    let entry = db
-        .pdgid(pdgid)?
-        .ok_or_else(|| CliError::NotFound(pdgid.to_string()))?;
-    let particle = db.particle_by_pdgid(&entry.pdgid)?;
+    let (target, lookup) = if let Some(mcid) = command.mcid {
+        (
+            format!("MCID {mcid}"),
+            db.lookup(LookupSelector::Mcid(mcid))?,
+        )
+    } else {
+        let target = command
+            .target
+            .as_deref()
+            .expect("the CLI requires a lookup selector");
+        let lookup = match db.lookup(LookupSelector::PdgId(target))? {
+            Lookup::Missing { .. } => db.lookup(LookupSelector::Name(target))?,
+            found => found,
+        };
+        (format!("{target:?}"), lookup)
+    };
 
+    let output = command.output;
+    let (entry, particles) = match lookup {
+        Lookup::Found { entry, particles } => (entry, particles),
+        Lookup::Ambiguous(particles) => {
+            let choices = particles
+                .iter()
+                .map(particle_choice)
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(CliError::Lookup(format!(
+                "{target} matches multiple particles\n{choices}"
+            )));
+        }
+        Lookup::Missing { suggestions } => {
+            let mut message = format!("no PDG entry or particle matched {target}");
+            if !suggestions.is_empty() {
+                message.push_str("\nClose matches\n");
+                let choices = suggestions
+                    .iter()
+                    .map(|hit| particle_choice(&hit.particle))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                message.push_str(&choices);
+            }
+            return Err(CliError::Lookup(message));
+        }
+    };
     match output.format {
-        OutputFormat::Pretty => print_show(&db, &entry, particle.as_ref(), output),
+        OutputFormat::Pretty => print_show(&db, &entry, &particles, output),
         OutputFormat::Json => {
-            let dto = show_dto(&db, &entry, particle.as_ref(), output)?;
+            let dto = show_dto(&db, &entry, &particles, output)?;
             println!("{}", serde_json::to_string_pretty(&dto)?);
             Ok(())
         }
     }
+}
+
+fn particle_choice(particle: &PdgParticle<'_>) -> String {
+    let mcid = particle
+        .mcid
+        .map_or_else(String::new, |mcid| format!(", MCID {mcid}"));
+    format!("  {} (PDG ID {}{mcid})", particle.name, particle.pdgid)
 }
 
 fn output_particles(particles: &[PdgParticle<'_>], output: &SearchOutput) -> CliResult<()> {
@@ -557,7 +619,7 @@ fn output_particles(particles: &[PdgParticle<'_>], output: &SearchOutput) -> Cli
 fn print_show(
     db: &Pdg,
     entry: &PdgIdEntry,
-    particle: Option<&PdgParticle<'_>>,
+    particles: &[PdgParticle<'_>],
     output: ShowOutput,
 ) -> CliResult<()> {
     let texts = if output.summary {
@@ -568,11 +630,18 @@ fn print_show(
     print_title(&format!("{} {}", entry.pdgid, entry.description), &texts);
     print_entry_summary(entry);
 
-    if let Some(particle) = particle {
-        print_particle_identity(particle)?;
+    if let Some(particle) = particles.first() {
+        let heading = if particles.len() == 1 {
+            "Particle"
+        } else {
+            "Particle variants"
+        };
+        println!("{}", heading.cyan());
+        println!("{}", particle_table(particles, false)?);
+        // Property and branching records are keyed by the common PDG ID.
         print_headline_properties(db, particle)?;
         if !output.summary {
-            print_related_particles(particle)?;
+            print_related_particles(particles)?;
             print_branching_fractions(particle)?;
             print_branching_ratios(particle)?;
         }
@@ -601,7 +670,13 @@ fn print_show(
         print_measurements_for(&entry.pdgid, &measurements);
         print_unattached_footnotes(&db.footnotes_for(&entry.pdgid)?, &measurements);
         if output.related_details {
-            print_related_details(db, &entry.pdgid, particle, &children, &related_entries)?;
+            print_related_details(
+                db,
+                &entry.pdgid,
+                particles.first(),
+                &children,
+                &related_entries,
+            )?;
         }
     }
 
@@ -646,12 +721,6 @@ fn print_entry_summary(entry: &PdgIdEntry) {
     meta.set_header(headers);
     meta.add_row(values);
     println!("{meta}");
-}
-
-fn print_particle_identity(particle: &PdgParticle<'_>) -> CliResult<()> {
-    println!("{}", "Particle".cyan());
-    println!("{}", particle_table(std::slice::from_ref(particle), false)?);
-    Ok(())
 }
 
 fn print_related_details(
@@ -807,12 +876,23 @@ fn print_pdgid_entries(entries: &[PdgIdEntry]) {
 fn show_dto(
     db: &Pdg,
     entry: &PdgIdEntry,
-    particle: Option<&PdgParticle<'_>>,
+    particles: &[PdgParticle<'_>],
     output: ShowOutput,
 ) -> CliResult<ShowDto> {
+    let (particle, variants) = match particles {
+        [particle] => (Some(ParticleDto::try_from(particle)?), Vec::new()),
+        _ => (
+            None,
+            particles
+                .iter()
+                .map(ParticleDto::try_from)
+                .collect::<CliResult<_>>()?,
+        ),
+    };
     Ok(ShowDto {
         entry: PdgIdEntryDto::from(entry),
-        particle: particle.map(ParticleDto::try_from).transpose()?,
+        particle,
+        variants,
         data: db
             .data_for(&entry.pdgid)?
             .iter()
@@ -961,13 +1041,25 @@ fn print_particles(particles: &[PdgParticle<'_>]) -> CliResult<()> {
     Ok(())
 }
 
-fn print_related_particles(particle: &PdgParticle<'_>) -> CliResult<()> {
-    let particles = particle.related_particles()?;
-    if particles.is_empty() {
+fn print_related_particles(particles: &[PdgParticle<'_>]) -> CliResult<()> {
+    let mut seen = particles
+        .iter()
+        .map(|particle| (particle.pdgid.clone(), particle.name.clone()))
+        .collect::<HashSet<_>>();
+    let mut related = Vec::new();
+    for particle in particles {
+        related.extend(
+            particle
+                .related_particles()?
+                .into_iter()
+                .filter(|particle| seen.insert((particle.pdgid.clone(), particle.name.clone()))),
+        );
+    }
+    if related.is_empty() {
         return Ok(());
     }
     println!("{}", "Related particles".cyan());
-    let table = particle_table(&particles, true)?;
+    let table = particle_table(&related, true)?;
     println!("{table}");
     Ok(())
 }

@@ -352,6 +352,86 @@ fn find_text_includes_footnotes() {
 }
 
 #[test]
+fn show_resolves_particle_names_aliases_and_signed_mcids() {
+    for (selector, name, mcid) in [
+        (&["π⁺"][..], "pi+", Some(211)),
+        (&["X(3872)"][..], "chi_c1(3872)", None),
+        (&["--mcid", "-211"][..], "pi-", Some(-211)),
+    ] {
+        let result = pdg_command()
+            .arg("show")
+            .args(selector)
+            .args(["--summary", "--format", "json"])
+            .assert()
+            .success();
+        let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert_eq!(value["particle"]["name"], name, "{selector:?}");
+        assert_eq!(value["particle"]["mcid"].as_i64(), mcid, "{selector:?}");
+    }
+}
+
+#[test]
+fn show_lists_variants_for_shared_pdg_ids() {
+    let names = ["rho(770)+", "rho(770)-", "rho(770)0"];
+    let pretty = pdg_command()
+        .args(["show", "M009", "--summary"])
+        .assert()
+        .success()
+        .stdout(contains("Particle variants"));
+    let stdout = std::str::from_utf8(&pretty.get_output().stdout).unwrap();
+    for name in names {
+        assert!(stdout.contains(name));
+    }
+
+    let result = pdg_command()
+        .args(["show", "M009", "--summary", "--format", "json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert!(value["particle"].is_null());
+    let variants = value["variants"].as_array().unwrap();
+    let actual_names = variants
+        .iter()
+        .map(|variant| variant["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual_names, names);
+}
+
+#[test]
+fn show_reports_ambiguous_and_close_matches_on_stderr() {
+    pdg_command()
+        .args(["show", "P_c_cbar(4312)+", "--format", "json"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(contains("matches multiple particles"))
+        .stderr(contains("B185"))
+        .stderr(contains("B205"));
+
+    pdg_command()
+        .args(["show", "prtoon", "--format", "json"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(contains("Close matches"))
+        .stderr(contains("p (PDG ID S016, MCID 2212)"));
+}
+
+#[test]
+fn show_requires_exactly_one_lookup_selector() {
+    pdg_command()
+        .arg("show")
+        .assert()
+        .code(2)
+        .stderr(contains("<TARGET>"));
+    pdg_command()
+        .args(["show", "S008", "--mcid", "211"])
+        .assert()
+        .code(2)
+        .stderr(contains("cannot be used with"));
+}
+
+#[test]
 fn show_finds_generic_pdgid_rows_with_labels() {
     let mut cmd = pdg_command();
     cmd.args(["show", "S008245"])
@@ -468,15 +548,15 @@ fn show_related_details_expands_related_measurements() {
 fn show_json_is_valid() {
     let mut cmd = pdg_command();
     let output = cmd
-        .args(["show", "S008", "--format", "json"])
+        .args(["show", "S009", "--format", "json"])
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(value["entry"]["pdgid"], "S008");
-    assert_eq!(value["particle"]["mcid"], 211);
+    assert_eq!(value["entry"]["pdgid"], "S009");
+    assert_eq!(value["particle"]["mcid"], 111);
 }
 
 #[test]
