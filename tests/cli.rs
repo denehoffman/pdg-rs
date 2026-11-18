@@ -19,13 +19,81 @@ fn help_mentions_only_canonical_subcommands() {
     cmd.arg("--help")
         .assert()
         .success()
+        .stdout(contains("\n  find "))
         .stdout(contains("show"))
-        .stdout(contains("search"))
         .stdout(contains("db"))
         .stdout(contains("tui"))
+        .stdout(contains("pdg find --text 'form factors'"))
+        .stdout(contains("\n  search ").not())
         .stdout(contains("  particle").not())
         .stdout(contains("  pdgid").not())
         .stdout(contains("  text").not());
+}
+
+#[test]
+fn find_without_criteria_prints_its_help_without_opening_a_database() {
+    let cache = tempfile::tempdir().unwrap();
+    pdg_command()
+        .env_remove("PDG_RS_DB_PATH")
+        .env("PDG_RS_CACHE_DIR", cache.path())
+        .args(["find", "--offline"])
+        .assert()
+        .success()
+        .stdout(contains("Usage: pdg find"))
+        .stdout(contains("--offline"))
+        .stdout(contains("pdg find --class meson --mass 900..1100"));
+}
+
+#[test]
+fn find_can_combine_aliases_and_filters() {
+    let result = pdg_command()
+        .args([
+            "find",
+            "X(3872)",
+            "--charge",
+            "0",
+            "--offline",
+            "--format",
+            "json",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success();
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["name"], "chi_c1(3872)");
+}
+
+#[test]
+fn nested_search_commands_are_unrecognized() {
+    for subcommand in ["particles", "text"] {
+        pdg_command()
+            .args(["search", subcommand, "pi+"])
+            .assert()
+            .code(2)
+            .stderr(contains("unrecognized subcommand 'search'"));
+    }
+}
+
+#[test]
+fn find_validates_text_options() {
+    pdg_command()
+        .args(["find", "--text"])
+        .assert()
+        .code(2)
+        .stderr(contains("[QUERY]").or(contains("<QUERY>")));
+    pdg_command()
+        .args(["find", "--text", "form factors", "--class", "lepton"])
+        .assert()
+        .code(2)
+        .stderr(contains("--text"))
+        .stderr(contains("--class"));
+    pdg_command()
+        .args(["find", "pi+", "--show-full-text"])
+        .assert()
+        .code(2)
+        .stderr(contains("--text"));
 }
 
 #[test]
@@ -48,18 +116,9 @@ fn db_status_reports_database_override() {
 }
 
 #[test]
-fn search_particles_requires_query_or_filter() {
+fn find_particles_prints_summary() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "particles"])
-        .assert()
-        .success()
-        .stdout(contains("Usage:"));
-}
-
-#[test]
-fn search_particles_prints_summary() {
-    let mut cmd = pdg_command();
-    cmd.args(["search", "particles", "K", "--limit", "3"])
+    cmd.args(["find", "K", "--limit", "3"])
         .assert()
         .success()
         .stdout(contains("Mass"))
@@ -69,18 +128,18 @@ fn search_particles_prints_summary() {
 }
 
 #[test]
-fn search_particles_accepts_filters() {
+fn find_particles_accepts_filters() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "particles", "--class", "lepton", "--limit", "3"])
+    cmd.args(["find", "--class", "lepton", "--limit", "3"])
         .assert()
         .success()
         .stdout(contains("Lepton"));
 }
 
 #[test]
-fn search_particles_accepts_mcid_without_query() {
+fn find_particles_accepts_mcid_without_query() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "particles", "--mcid", "22"])
+    cmd.args(["find", "--mcid", "22"])
         .assert()
         .success()
         .stdout(contains("S000"))
@@ -89,9 +148,9 @@ fn search_particles_accepts_mcid_without_query() {
 }
 
 #[test]
-fn search_particles_accepts_negative_mcid_without_equals() {
+fn find_particles_accepts_negative_mcid_without_equals() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "particles", "--mcid", "-2212"])
+    cmd.args(["find", "--mcid", "-2212"])
         .assert()
         .success()
         .stdout(contains("S016"))
@@ -101,9 +160,9 @@ fn search_particles_accepts_negative_mcid_without_equals() {
 }
 
 #[test]
-fn search_particles_matches_common_aliases() {
+fn find_particles_matches_common_aliases() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "particles", "proton"])
+    cmd.args(["find", "proton"])
         .assert()
         .success()
         .stdout(contains("S016"))
@@ -112,19 +171,11 @@ fn search_particles_matches_common_aliases() {
 }
 
 #[test]
-fn search_particles_accepts_database_aliases_and_fuzzy_queries() {
+fn find_particles_accepts_database_aliases_and_fuzzy_queries() {
     for (query, name) in [("X(3872)", "chi_c1(3872)"), ("π⁺", "pi+"), ("prtoon", "p")] {
         let mut cmd = pdg_command();
         let result = cmd
-            .args([
-                "search",
-                "particles",
-                query,
-                "--limit",
-                "1",
-                "--format",
-                "json",
-            ])
+            .args(["find", query, "--limit", "1", "--format", "json"])
             .assert()
             .success();
         let hits: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
@@ -133,10 +184,10 @@ fn search_particles_accepts_database_aliases_and_fuzzy_queries() {
 }
 
 #[test]
-fn search_particles_ranks_exact_short_names_first() {
+fn find_particles_ranks_exact_short_names_first() {
     let mut cmd = pdg_command();
     let stdout = String::from_utf8(
-        cmd.args(["search", "particles", "p", "--limit", "5"])
+        cmd.args(["find", "p", "--limit", "5"])
             .assert()
             .success()
             .get_output()
@@ -150,10 +201,10 @@ fn search_particles_ranks_exact_short_names_first() {
 }
 
 #[test]
-fn search_particles_filter_only_defaults_to_all_results() {
+fn find_particles_filter_only_defaults_to_all_results() {
     let mut cmd = pdg_command();
     let output = cmd
-        .args(["search", "particles", "--charge", "+2", "--format", "json"])
+        .args(["find", "--charge", "+2", "--format", "json"])
         .assert()
         .success()
         .get_output()
@@ -164,11 +215,10 @@ fn search_particles_filter_only_defaults_to_all_results() {
 }
 
 #[test]
-fn search_particles_accepts_decay_filters() {
+fn find_particles_accepts_decay_filters() {
     let mut cmd = pdg_command();
     cmd.args([
-        "search",
-        "particles",
+        "find",
         "--decays-to",
         "K(S)0,K(S)0",
         "--charge",
@@ -182,11 +232,10 @@ fn search_particles_accepts_decay_filters() {
 }
 
 #[test]
-fn search_particles_uses_section_derived_properties() {
+fn find_particles_uses_section_derived_properties() {
     let mut cmd = pdg_command();
     cmd.args([
-        "search",
-        "particles",
+        "find",
         "--decays-to",
         "K(S)0,K(S)0",
         "--parity",
@@ -204,27 +253,19 @@ fn search_particles_uses_section_derived_properties() {
 }
 
 #[test]
-fn search_particles_filters_section_derived_properties() {
+fn find_particles_filters_section_derived_properties() {
     let mut cmd = pdg_command();
-    cmd.args([
-        "search",
-        "particles",
-        "a_0(",
-        "--mass",
-        "1500..2000",
-        "--limit",
-        "20",
-    ])
-    .assert()
-    .success()
-    .stdout(contains("a_0(1710)0"))
-    .stdout(contains("a_0(980)0").not());
+    cmd.args(["find", "a_0(", "--mass", "1500..2000", "--limit", "20"])
+        .assert()
+        .success()
+        .stdout(contains("a_0(1710)0"))
+        .stdout(contains("a_0(980)0").not());
 }
 
 #[test]
-fn search_text_prints_results() {
+fn find_text_prints_results() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "text", "form factors", "--limit", "3"])
+    cmd.args(["find", "--text", "form factors", "--limit", "3"])
         .assert()
         .success()
         .stdout(contains("PDG ID"))
@@ -236,9 +277,9 @@ fn search_text_prints_results() {
 }
 
 #[test]
-fn search_text_includes_footnotes() {
+fn find_text_includes_footnotes() {
     let mut cmd = pdg_command();
-    cmd.args(["search", "text", "normalisation decay", "--limit", "2"])
+    cmd.args(["find", "--text", "normalisation decay", "--limit", "2"])
         .assert()
         .success()
         .stdout(contains("S042P86"))
@@ -400,18 +441,10 @@ fn show_json_includes_measurement_details() {
 }
 
 #[test]
-fn search_particles_json_is_valid() {
+fn find_particles_json_is_valid() {
     let mut cmd = pdg_command();
     let output = cmd
-        .args([
-            "search",
-            "particles",
-            "pi+",
-            "--limit",
-            "1",
-            "--format",
-            "json",
-        ])
+        .args(["find", "pi+", "--limit", "1", "--format", "json"])
         .assert()
         .success()
         .get_output()
@@ -422,12 +455,12 @@ fn search_particles_json_is_valid() {
 }
 
 #[test]
-fn search_text_json_is_valid() {
+fn find_text_json_is_valid() {
     let mut cmd = pdg_command();
     let output = cmd
         .args([
-            "search",
-            "text",
+            "find",
+            "--text",
             "form factors",
             "--limit",
             "3",
@@ -444,12 +477,12 @@ fn search_text_json_is_valid() {
 }
 
 #[test]
-fn search_text_json_includes_footnote_source() {
+fn find_text_json_includes_footnote_source() {
     let mut cmd = pdg_command();
     let output = cmd
         .args([
-            "search",
-            "text",
+            "find",
+            "--text",
             "normalisation decay",
             "--limit",
             "1",
