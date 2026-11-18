@@ -1,12 +1,19 @@
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr,
 };
 
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{
+    CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    builder::{PossibleValue, TypedValueParser},
+};
+use clap_complete::{Shell, generate};
 use comfy_table::{ColumnConstraint, ContentArrangement, Width};
 use owo_colors::OwoColorize;
 use pdg_rs::{
@@ -224,7 +231,7 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
     name = "pdg",
     version,
     about = "Search the Particle Data Group database",
-    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --text 'form factors'\n  pdg show 'pi+'"
+    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --decays-to 'K(S)0,K(S)0' --charge 0\n  pdg find --text 'form factors'\n  pdg show 'pi+'\n  pdg completions zsh"
 )]
 struct Cli {
     #[command(flatten)]
@@ -239,7 +246,7 @@ struct DatabaseOptions {
     #[arg(long, global = true)]
     offline: bool,
     /// Open this local SQLite file in place of the default database.
-    #[arg(long, global = true, value_name = "FILE")]
+    #[arg(long, global = true, value_name = "FILE", value_hint = ValueHint::FilePath)]
     db_path: Option<PathBuf>,
 }
 
@@ -259,6 +266,12 @@ enum Commands {
     Show(ShowCommand),
     /// Manage the cached PDG database.
     Db(DbCommand),
+    /// Generate a shell completion script.
+    Completions {
+        /// Shell to generate the script for.
+        #[arg(value_enum)]
+        shell: Shell,
+    },
     /// Reserved for the future terminal UI.
     Tui,
 }
@@ -326,13 +339,13 @@ struct ShowCommand {
 #[group(id = "particle_filters")]
 struct ParticleFilters {
     /// Filter by particle class.
-    #[arg(long, value_parser = parse_class)]
+    #[arg(long, value_parser = SuggestedValues(parse_class, &["gauge-boson", "lepton", "quark", "meson", "baryon"]))]
     class: Option<ParticleClass>,
     /// Filter by particle/antiparticle/self-conjugate type.
-    #[arg(long = "type", value_parser = parse_particle_type)]
+    #[arg(long = "type", value_parser = SuggestedValues(parse_particle_type, &["particle", "antiparticle", "self-conjugate"]))]
     particle_type: Option<ParticleType>,
-    /// Filter by electric charge, e.g. 0, +1, -1, +2/3.
-    #[arg(long, allow_hyphen_values = true, value_parser = parse_charge)]
+    /// Filter by electric charge.
+    #[arg(long, allow_hyphen_values = true, value_parser = SuggestedValues(parse_charge, &["-2", "-1", "-2/3", "-1/3", "0", "+1/3", "+2/3", "+1", "+2"]))]
     charge: Option<Charge>,
     /// Filter by signed Monte Carlo ID.
     #[arg(long, allow_hyphen_values = true)]
@@ -340,20 +353,20 @@ struct ParticleFilters {
     /// Filter by mass range in MeV, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
     mass: Option<(f64, f64)>,
-    /// Filter by isospin; accepts values like 0, 1/2, 1, 3/2, unknown, or missing.
-    #[arg(long, value_parser = parse_isospin_filter)]
+    /// Filter by isospin. The photon matches both 0 and 1.
+    #[arg(long, value_parser = SuggestedValues(parse_isospin_filter, &["0", "1/2", "1", "3/2", "unknown", "missing"]))]
     isospin: Option<QuantumArg<Isospin>>,
-    /// Filter by G parity; accepts +, -, unknown, or missing.
-    #[arg(long, value_parser = parse_parity_filter)]
+    /// Filter by G parity.
+    #[arg(long, value_parser = SuggestedValues(parse_parity_filter, PARITY_VALUES))]
     g_parity: Option<QuantumArg<Parity>>,
-    /// Filter by spin/angular momentum; accepts values like 0, 1/2, 1, 3/2, unknown, or missing.
-    #[arg(long, value_parser = parse_spin_filter)]
+    /// Filter by spin/angular momentum. Custom PDG spin strings are also accepted.
+    #[arg(long, hide_possible_values = true, value_parser = SuggestedValues(parse_spin_filter, SPIN_VALUES))]
     spin: Option<QuantumArg<AngularMomentum>>,
-    /// Filter by parity; accepts +, -, unknown, or missing.
-    #[arg(long, value_parser = parse_parity_filter)]
+    /// Filter by parity.
+    #[arg(long, value_parser = SuggestedValues(parse_parity_filter, PARITY_VALUES))]
     parity: Option<QuantumArg<Parity>>,
-    /// Filter by charge conjugation parity; accepts +, -, unknown, or missing.
-    #[arg(long, value_parser = parse_parity_filter)]
+    /// Filter by charge conjugation parity.
+    #[arg(long, value_parser = SuggestedValues(parse_parity_filter, PARITY_VALUES))]
     c_parity: Option<QuantumArg<Parity>>,
     /// Filter by width range in MeV, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
@@ -441,6 +454,33 @@ enum QuantumArg<T> {
     Value(T),
 }
 
+const PARITY_VALUES: &[&str] = &["+", "-", "unknown", "missing"];
+const SPIN_VALUES: &[&str] = &[
+    "0", "1/2", "1", "3/2", "2", "5/2", "3", "7/2", "4", "9/2", "5", "11/2", "6", "13/2", "7",
+    "15/2", "unknown", "missing",
+];
+
+// Give Clap and completion generators canonical spellings while preserving the parser's aliases.
+#[derive(Clone)]
+struct SuggestedValues<P>(P, &'static [&'static str]);
+
+impl<P: TypedValueParser> TypedValueParser for SuggestedValues<P> {
+    type Value = P::Value;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        self.0.parse_ref(cmd, arg, value)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(self.1.iter().copied().map(PossibleValue::new)))
+    }
+}
+
 fn main() -> ExitCode {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -460,6 +500,12 @@ fn run() -> CliResult<()> {
         Commands::Find(command) => run_find(&command, &cli.database),
         Commands::Show(command) => run_show(&command, &cli.database),
         Commands::Db(command) => run_db(&command, &cli.database),
+        Commands::Completions { shell } => {
+            let mut script = Vec::new();
+            generate(shell, &mut Cli::command(), "pdg", &mut script);
+            io::stdout().lock().write_all(&script)?;
+            Ok(())
+        }
         Commands::Tui => Err(CliError::InvalidArgument(
             "TUI is not implemented yet. Use `pdg find`, `pdg show`, or `pdg db`.".into(),
         )),
@@ -1360,9 +1406,8 @@ fn parse_isospin_filter(value: &str) -> Result<QuantumArg<Isospin>, String> {
         "1/2" | "half" => Isospin::I1,
         "1" => Isospin::I2,
         "3/2" => Isospin::I3,
-        "0or1" | "photon" => Isospin::Photon,
         "unknown" | "?" => Isospin::Unknown,
-        _ => return Err("expected 0, 1/2, 1, 3/2, 0-or-1, unknown, or missing".into()),
+        _ => return Err("expected 0, 1/2, 1, 3/2, unknown, or missing".into()),
     }))
 }
 
@@ -1370,9 +1415,12 @@ fn parse_parity_filter(value: &str) -> Result<QuantumArg<Parity>, String> {
     if is_missing(value) {
         return Ok(QuantumArg::Missing);
     }
+    if value.trim() == "-" {
+        return Ok(QuantumArg::Value(Parity::Minus));
+    }
     Ok(QuantumArg::Value(match normalize(value).as_str() {
         "+" | "plus" => Parity::Plus,
-        "-" | "minus" => Parity::Minus,
+        "minus" => Parity::Minus,
         "unknown" | "?" => Parity::Unknown,
         _ => return Err("expected +, -, unknown, or missing".into()),
     }))

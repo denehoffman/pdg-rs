@@ -46,6 +46,44 @@ Pass `--db-path FILE` to open an existing local SQLite database read-only. The f
 
 Numeric data and property filters default to the opened file's edition. Run `pdg db status` to see its release and available numeric editions. Use `pdg show 'pi+' --edition 2024` or `pdg find --mass 100..150 --edition 2024` for historical values. Rust callers can use `Pdg::open()?.with_edition("2024")?`. The particle catalogue, decay listings, text, and measurements come from the opened file's release. JSON from `show` reports the selected `edition` and the release metadata in `database`.
 
+### Shell completion
+
+`pdg completions --help` lists the supported shells. Load the generated script in the current shell with one of these commands.
+
+```bash
+source <(pdg completions bash)
+```
+
+```zsh
+autoload -Uz compinit
+compinit
+source <(pdg completions zsh)
+```
+
+```fish
+pdg completions fish | source
+```
+
+### Rust quickstart
+
+After caching the database with `pdg db fetch` or `Pdg::open`, use `Pdg::open_cached` for offline access.
+
+```rust,no_run
+use pdg_rs::{Charge, Lookup, LookupSelector, ParticleSearchQuery, Pdg, PdgResult};
+
+fn main() -> PdgResult<()> {
+    let pdg = Pdg::open_cached()?;
+    if let Lookup::Found { entry, .. } = pdg.lookup(LookupSelector::Mcid(211))? {
+        println!("{} {}", entry.pdgid, entry.description);
+    }
+    let filters = ParticleSearchQuery::new().charge(Charge::Plus);
+    for hit in pdg.find_particles("pion", filters)? {
+        println!("{} ({:?})", hit.particle.name, hit.kind);
+    }
+    Ok(())
+}
+```
+
 ### Get information about a specific particle:
 ```rust,no_run
 use pdg_rs::{Pdg, PdgResult};

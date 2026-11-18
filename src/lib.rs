@@ -608,7 +608,21 @@ impl Pdg {
             params.push(Value::Real(charge.as_f64()));
         }
 
-        Self::push_quantum_filter(&mut sql, &mut params, "quantum_i", query.isospin);
+        match query.isospin {
+            QuantumFilter::Value(value @ (Isospin::I0 | Isospin::I2)) => {
+                sql.push_str(" AND quantum_i IN (?, ?)");
+                params.extend([
+                    Value::Text(value.to_code().to_owned()),
+                    Value::Text(Isospin::Photon.to_code().to_owned()),
+                ]);
+            }
+            QuantumFilter::Value(value) => {
+                sql.push_str(" AND quantum_i = ?");
+                params.push(Value::Text(value.to_code().to_owned()));
+            }
+            QuantumFilter::Missing => sql.push_str(" AND quantum_i IS NULL"),
+            QuantumFilter::Any => {}
+        }
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_g", query.g_parity);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_j", query.angular_momentum);
         Self::push_quantum_filter(&mut sql, &mut params, "quantum_p", query.parity);

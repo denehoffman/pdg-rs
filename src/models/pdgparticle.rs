@@ -234,20 +234,26 @@ pub enum Isospin {
     Unknown,
 }
 
+impl Isospin {
+    pub(crate) const fn to_code(self) -> &'static str {
+        match self {
+            Self::I0 => "0",
+            Self::I1 => "1/2",
+            Self::I2 => "1",
+            Self::I3 => "3/2",
+            Self::Photon => "0,1",
+            Self::Unknown => "?",
+        }
+    }
+}
+
 impl Display for Isospin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::I0 => "0",
-                Self::I1 => "1/2",
-                Self::I2 => "1",
-                Self::I3 => "3/2",
-                Self::Photon => "0 or 1",
-                Self::Unknown => "Unknown",
-            }
-        )
+        f.write_str(match self {
+            Self::Photon => "0 or 1",
+            Self::Unknown => "Unknown",
+            _ => self.to_code(),
+        })
     }
 }
 
