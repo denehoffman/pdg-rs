@@ -27,8 +27,10 @@ use ratatui::{
 
 use crate::{CliError, CliResult, DatabaseOptions, TuiCommand, open_pdg};
 
+mod command;
 mod detail;
 mod filters;
+use command::SearchSource;
 use detail::{Detail, View};
 use filters::{AppliedFilters, EditorAction, FilterEditor};
 
@@ -43,7 +45,11 @@ pub fn run(command: &TuiCommand, database: &DatabaseOptions) -> CliResult<()> {
     }
 
     let db = open_pdg(database, command.edition.as_deref())?;
-    let mut app = App::new(command.query.as_deref().unwrap_or_default(), command.text);
+    let mut app = App::new(
+        command.query.as_deref().unwrap_or_default(),
+        command.text,
+        SearchSource::new(database, command.edition.as_deref()),
+    );
     let mut terminal = ratatui::try_init().inspect_err(|_| ratatui::restore())?;
     let result = (|| {
         execute!(io::stdout(), EnableBracketedPaste)?;
@@ -77,11 +83,11 @@ fn drive(terminal: &mut DefaultTerminal, app: &mut App, db: &Pdg) -> CliResult<(
                         terminal.draw(|frame| app.draw(frame, db))?;
                         app.apply_filters(db);
                     }
-                    Action::Copy(value) => {
+                    Action::Copy { value, notice } => {
                         app.notice = Some(
                             match execute!(io::stdout(), CopyToClipboard::to_clipboard_from(&value))
                             {
-                                Ok(()) => format!("Sent {value} to the terminal clipboard."),
+                                Ok(()) => notice,
                                 Err(error) => format!("Clipboard unavailable. {error}"),
                             },
                         );
@@ -98,7 +104,16 @@ enum Action {
     None,
     Quit,
     ApplyFilters,
-    Copy(String),
+    Copy { value: String, notice: String },
+}
+
+impl Action {
+    fn copy(value: &str) -> Self {
+        Self::Copy {
+            value: value.to_owned(),
+            notice: format!("Sent {value} to the terminal clipboard."),
+        }
+    }
 }
 
 enum Hit {
@@ -230,6 +245,7 @@ impl Mode {
 struct App {
     input: SearchInput,
     mode: Mode,
+    source: SearchSource,
     hits: Vec<Hit>,
     results: ListState,
     detail: Option<Detail>,
@@ -243,12 +259,13 @@ struct App {
 }
 
 impl App {
-    fn new(query: &str, text: bool) -> Self {
+    fn new(query: &str, text: bool, source: SearchSource) -> Self {
         let mut input = SearchInput::default();
         input.insert(query);
         Self {
             input,
             mode: if text { Mode::Text } else { Mode::Particles },
+            source,
             hits: Vec::new(),
             results: ListState::default(),
             detail: None,
@@ -358,6 +375,30 @@ impl App {
         }
     }
 
+    fn copy_search(&mut self) -> Action {
+        match self
+            .source
+            .find_command(self.mode, self.input.value(), self.filters.as_ref())
+        {
+            Ok(Some(value)) => Action::Copy {
+                value,
+                notice: "Sent the find command to the terminal clipboard.".into(),
+            },
+            Ok(None) => {
+                self.notice = Some(if self.mode == Mode::Text {
+                    "Enter a text query to copy its command.".into()
+                } else {
+                    "Enter a name or apply a filter to copy its command.".into()
+                });
+                Action::None
+            }
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                Action::None
+            }
+        }
+    }
+
     fn key(&mut self, db: &Pdg, key: KeyEvent) -> CliResult<Action> {
         if matches!(key.code, KeyCode::Char('c' | 'C'))
             && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -388,8 +429,8 @@ impl App {
                         self.previous_detail = self.detail.replace(channel);
                     }
                 }
-                KeyCode::Char('c') => return Ok(Action::Copy(detail.name_or_id().to_owned())),
-                KeyCode::Char('i') => return Ok(Action::Copy(detail.id().to_owned())),
+                KeyCode::Char('c') => return Ok(Action::copy(detail.name_or_id())),
+                KeyCode::Char('i') => return Ok(Action::copy(detail.id())),
                 KeyCode::Char(key) => {
                     if let Some(view) = View::from_key(key) {
                         detail.load(db, view)?;
@@ -403,6 +444,7 @@ impl App {
                 KeyCode::F(2) if self.mode == Mode::Particles => {
                     self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
                 }
+                KeyCode::F(3) => return Ok(self.copy_search()),
                 KeyCode::Tab => {
                     self.mode = if self.mode == Mode::Particles {
                         Mode::Text
@@ -606,7 +648,7 @@ impl App {
                 ""
             };
             lines.push(Line::raw(format!(
-                "{filters}Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
+                "{filters}F3 Copy search  Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
             )));
         }
         Paragraph::new(lines).wrap(Wrap { trim: true })
@@ -739,7 +781,7 @@ mod tests {
     fn browser_retains_the_ranked_result_when_returning_from_a_detail() {
         let db = test_db();
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        let mut app = App::new("f980", false);
+        let mut app = App::new("f980", false, SearchSource::default());
         app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
 
@@ -748,7 +790,7 @@ mod tests {
         assert!(matches!(app.detail.as_ref().unwrap().view, View::Mass));
         assert!(matches!(
             app.key(&db, key(KeyCode::Char('c'))).unwrap(),
-            Action::Copy(name) if name == "f_0(980)0"
+            Action::Copy { value, .. } if value == "f_0(980)0"
         ));
         app.key(&db, key(KeyCode::Esc)).unwrap();
         assert!(app.detail.is_none());
@@ -759,7 +801,7 @@ mod tests {
     #[test]
     fn filters_support_blank_queries_and_open_the_recorded_channel() {
         let db = test_db();
-        let mut app = App::new("", false);
+        let mut app = App::new("", false, SearchSource::default());
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         app.key(&db, key(KeyCode::F(2))).unwrap();
         app.key(&db, key(KeyCode::Char(' '))).unwrap();
@@ -788,6 +830,11 @@ mod tests {
         assert!(app.filter_editor.is_none());
         assert_eq!(app.hits.len(), 27);
         assert_eq!(app.input.value(), "");
+        assert!(matches!(
+            app.key(&db, key(KeyCode::F(3))).unwrap(),
+            Action::Copy { value, .. }
+                if value == "pdg find --limit=50 --class=meson --charge=0 --mass=900..2000 --decays-to=KS,KS"
+        ));
 
         app.paste("f980");
         app.search(&db).unwrap();
@@ -835,6 +882,10 @@ mod tests {
 
         app.key(&db, key(KeyCode::Tab)).unwrap();
         assert!(app.mode == Mode::Text && app.filters.is_some());
+        assert!(matches!(
+            app.key(&db, key(KeyCode::F(3))).unwrap(),
+            Action::Copy { value, .. } if value == "pdg find --limit=50 --text f980"
+        ));
         app.key(&db, key(KeyCode::Tab)).unwrap();
         app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));

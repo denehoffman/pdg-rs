@@ -87,6 +87,8 @@ Enter applies the filters together and Esc cancels the edits. Mass ranges in `Me
 
 For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. Key 6 returns to the matching channels from the particle's other detail views.
 
+From the results, press F3 to copy the current search as a `pdg find` command for a POSIX shell. The command includes the query, applied filters, database options, and the browser's 50-result limit.
+
 Press `c` in the detail pane to copy the canonical name when a single particle is selected. Press `i` to copy the PDG ID. Clipboard delivery uses OSC 52 and depends on terminal support. The browser uses the same `--db-path`, `--offline`, and `--edition` options as the CLI queries. The `tui` Cargo feature is enabled by default. To build the binary without the browser, use `--no-default-features --features ratio`.
 
 ### Shell completion

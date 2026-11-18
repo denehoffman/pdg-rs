@@ -21,6 +21,26 @@ pub(super) struct AppliedFilters {
     pub(super) hits: Vec<OwnedParticleFilterHit>,
 }
 
+impl AppliedFilters {
+    pub(super) fn command_options(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        let draft = &self.draft;
+        let decay = if draft.decay_mode == 0 {
+            "--decays-to"
+        } else {
+            "--decay-contains"
+        };
+        [
+            ("--class", Field::Class.value(draft.class)),
+            ("--type", Field::Type.value(draft.particle_type)),
+            ("--charge", Field::Charge.value(draft.charge)),
+            ("--spin", draft.spin_value()),
+            ("--mass", draft.mass.value()),
+            (decay, draft.products.value()),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+    }
+}
 #[derive(Clone, Default)]
 struct Draft {
     class: usize,
@@ -487,5 +507,23 @@ mod tests {
             filters.spin,
             Some(QuantumArg::Value(AngularMomentum::Custom(value))) if value == "2,3"
         ));
+        editor.key(key(KeyCode::Tab));
+        editor.key(key(KeyCode::Tab));
+        editor.key(key(KeyCode::Right));
+        editor.key(key(KeyCode::Tab));
+        editor.paste("pi+,pi0");
+        let applied = AppliedFilters {
+            draft: editor.draft,
+            summary: String::new(),
+            hits: Vec::new(),
+        };
+        assert_eq!(
+            applied.command_options().collect::<Vec<_>>(),
+            [
+                ("--type", "self-conjugate"),
+                ("--spin", "2,3"),
+                ("--decay-contains", "pi+,pi0"),
+            ]
+        );
     }
 }
