@@ -9,7 +9,10 @@ pub use pdgparticle::{
 };
 
 mod pdgsearch;
-pub use pdgsearch::{DecayMatchMode, DecayStateExpansion, ParticleSearchQuery, QuantumFilter};
+pub use pdgsearch::{
+    DecayChannelMatch, DecayMatchMode, DecayStateExpansion, ParticleFilterHit, ParticleSearchQuery,
+    QuantumFilter,
+};
 
 mod pdgdata;
 pub use pdgdata::DataEntry;
