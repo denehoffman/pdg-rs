@@ -1,8 +1,15 @@
+use crossterm::event::KeyCode;
 use pdg_rs::{
-    EntryDetailView, EntryDetails, Lookup, LookupSelector, ParticleSummary, Pdg, PdgIdEntry,
-    PdgReference, PdgResult, TextSearchResult,
+    EntryDetailView, EntryDetails, Lookup, LookupSelector, OwnedDecayChannelMatch, ParticleSummary,
+    Pdg, PdgIdEntry, PdgReference, PdgResult, TextSearchResult,
 };
-use ratatui::{style::Stylize, text::Line};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style, Stylize},
+    text::Line,
+    widgets::{Block, List, ListItem, ListState},
+};
 
 use super::Hit;
 use crate::footnote_key;
@@ -15,6 +22,7 @@ pub(super) enum View {
     Decays,
     Measurements,
     References,
+    Matches,
 }
 
 impl View {
@@ -26,6 +34,7 @@ impl View {
             Self::Decays => "Decays",
             Self::Measurements => "Measurements",
             Self::References => "References",
+            Self::Matches => "Matching decay channels",
         }
     }
 
@@ -37,13 +46,14 @@ impl View {
             '3' => Some(Self::Decays),
             '4' => Some(Self::Measurements),
             '5' => Some(Self::References),
+            '6' => Some(Self::Matches),
             _ => None,
         }
     }
 
     const fn selection(self) -> Option<EntryDetailView> {
         match self {
-            Self::Text => None,
+            Self::Text | Self::Matches => None,
             Self::Overview => Some(EntryDetailView::Overview),
             Self::Mass => Some(EntryDetailView::Mass),
             Self::Decays => Some(EntryDetailView::Decays),
@@ -57,6 +67,8 @@ pub(super) struct Detail {
     entry: PdgIdEntry,
     particle: Option<ParticleSummary>,
     text: Option<TextSearchResult>,
+    matching_decays: Vec<OwnedDecayChannelMatch>,
+    matches: ListState,
     pub(super) view: View,
     pub(super) lines: Vec<Line<'static>>,
     pub(super) scroll: u16,
@@ -68,24 +80,55 @@ impl Detail {
         else {
             return Ok(None);
         };
-        let (particle, text, view) = match hit {
-            Hit::Particle(hit) => (Some(hit.particle.clone()), None, View::Overview),
+        let (particle, text, matching_decays) = match hit {
+            Hit::Particle(hit) => (
+                Some(hit.particle.clone()),
+                None,
+                hit.matching_decays.clone(),
+            ),
             Hit::Text(hit) => (
                 (particles.len() == 1).then(|| ParticleSummary::from(&particles[0])),
                 Some(hit.clone()),
-                View::Text,
+                Vec::new(),
             ),
         };
+        Self::new(db, entry, particle, text, matching_decays).map(Some)
+    }
+
+    pub(super) fn open_channel(db: &Pdg, id: &str) -> PdgResult<Option<Self>> {
+        let Some(entry) = db.pdgid(id)? else {
+            return Ok(None);
+        };
+        Self::new(db, entry, None, None, Vec::new()).map(Some)
+    }
+
+    fn new(
+        db: &Pdg,
+        entry: PdgIdEntry,
+        particle: Option<ParticleSummary>,
+        text: Option<TextSearchResult>,
+        matching_decays: Vec<OwnedDecayChannelMatch>,
+    ) -> PdgResult<Self> {
+        let view = if !matching_decays.is_empty() {
+            View::Matches
+        } else if text.is_some() {
+            View::Text
+        } else {
+            View::Overview
+        };
+        let matches = ListState::default().with_selected((view == View::Matches).then_some(0));
         let mut detail = Self {
             entry,
             particle,
             text,
+            matching_decays,
+            matches,
             view,
             lines: Vec::new(),
             scroll: 0,
         };
         detail.load(db, view)?;
-        Ok(Some(detail))
+        Ok(detail)
     }
 
     pub(super) fn id(&self) -> &str {
@@ -102,7 +145,76 @@ impl Detail {
         self.text.is_some()
     }
 
+    pub(super) const fn has_matches(&self) -> bool {
+        !self.matching_decays.is_empty()
+    }
+
+    pub(super) fn selected_channel(&self) -> Option<&str> {
+        if self.view != View::Matches {
+            return None;
+        }
+        self.matches
+            .selected()
+            .and_then(|index| self.matching_decays.get(index))
+            .map(|channel| channel.pdgid.as_str())
+    }
+
+    pub(super) fn navigate(&mut self, code: KeyCode, page: u16) {
+        if self.view == View::Matches {
+            let last = self.matching_decays.len().saturating_sub(1);
+            let selected = self.matches.selected().unwrap_or_default();
+            let index = match code {
+                KeyCode::Up => selected.saturating_sub(1),
+                KeyCode::Down => selected.saturating_add(1).min(last),
+                KeyCode::PageUp => selected.saturating_sub(usize::from(page)),
+                KeyCode::PageDown => selected.saturating_add(usize::from(page)).min(last),
+                KeyCode::Home => 0,
+                KeyCode::End => last,
+                _ => return,
+            };
+            self.matches.select(Some(index));
+        } else {
+            self.scroll = match code {
+                KeyCode::Up => self.scroll.saturating_sub(1),
+                KeyCode::Down => self.scroll.saturating_add(1),
+                KeyCode::PageUp => self.scroll.saturating_sub(page),
+                KeyCode::PageDown => self.scroll.saturating_add(page),
+                KeyCode::Home => 0,
+                KeyCode::End => u16::MAX,
+                _ => return,
+            };
+        }
+    }
+
+    pub(super) fn draw_matches(&mut self, frame: &mut Frame<'_>, area: Rect, accent: Style) {
+        let block = Block::bordered().border_style(accent).title(format!(
+            " {} · {} ",
+            self.id(),
+            self.view.label()
+        ));
+        let items = self
+            .matching_decays
+            .iter()
+            .map(|channel| ListItem::new(format!("{}  {}", channel.pdgid, channel.description)));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(block)
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("› "),
+            area,
+            &mut self.matches,
+        );
+    }
+
     pub(super) fn load(&mut self, db: &Pdg, view: View) -> PdgResult<()> {
+        if view == View::Matches {
+            if self.has_matches() {
+                self.view = view;
+                self.lines.clear();
+                self.scroll = 0;
+            }
+            return Ok(());
+        }
         let mut lines = vec![
             Line::raw(self.entry.description.clone()).bold(),
             Line::raw(format!("{}  ·  {}", self.entry.pdgid, self.entry.data_type)),

@@ -370,17 +370,17 @@ struct ShowCommand {
 }
 
 #[allow(clippy::doc_markdown)]
-#[derive(Parser, Clone)]
+#[derive(Parser, Clone, Default)]
 #[group(id = "particle_filters")]
 struct ParticleFilters {
     /// Filter by particle class.
-    #[arg(long, value_parser = SuggestedValues(parse_class, &["gauge-boson", "lepton", "quark", "meson", "baryon"]))]
+    #[arg(long, value_parser = SuggestedValues(parse_class, CLASS_VALUES))]
     class: Option<ParticleClass>,
     /// Filter by particle/antiparticle/self-conjugate type.
-    #[arg(long = "type", value_parser = SuggestedValues(parse_particle_type, &["particle", "antiparticle", "self-conjugate"]))]
+    #[arg(long = "type", value_parser = SuggestedValues(parse_particle_type, PARTICLE_TYPE_VALUES))]
     particle_type: Option<ParticleType>,
     /// Filter by electric charge.
-    #[arg(long, allow_hyphen_values = true, value_parser = SuggestedValues(parse_charge, &["-2", "-1", "-2/3", "-1/3", "0", "+1/3", "+2/3", "+1", "+2"]))]
+    #[arg(long, allow_hyphen_values = true, value_parser = SuggestedValues(parse_charge, CHARGE_VALUES))]
     charge: Option<Charge>,
     /// Filter by signed Monte Carlo ID.
     #[arg(long, allow_hyphen_values = true)]
@@ -511,9 +511,10 @@ enum OutputFormat {
     Json,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Default, ValueEnum)]
 enum DecayExpansionArg {
     /// Resolve exact aliases and include related PDG decay states.
+    #[default]
     Inclusive,
     /// Match the product spellings recorded in the database.
     Literal,
@@ -535,6 +536,9 @@ enum QuantumArg<T> {
 }
 
 const PARITY_VALUES: &[&str] = &["+", "-", "unknown", "missing"];
+const CLASS_VALUES: &[&str] = &["gauge-boson", "lepton", "quark", "meson", "baryon"];
+const PARTICLE_TYPE_VALUES: &[&str] = &["particle", "antiparticle", "self-conjugate"];
+const CHARGE_VALUES: &[&str] = &["-2", "-1", "-2/3", "-1/3", "0", "+1/3", "+2/3", "+1", "+2"];
 const SPIN_VALUES: &[&str] = &[
     "0", "1/2", "1", "3/2", "2", "5/2", "3", "7/2", "4", "9/2", "5", "11/2", "6", "13/2", "7",
     "15/2", "unknown", "missing",

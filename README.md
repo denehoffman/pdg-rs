@@ -81,6 +81,12 @@ pdg tui --text 'form factors'
 
 Type to search, press Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. In the detail pane, keys 1 through 5 select overview, mass, decays, measurements, and references. Key 0 returns to the matched passage for a text result. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
 
+Press F2 from particle search to edit the filters. Class, particle type, charge, and spin start at **Any**. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
+
+Enter applies the filters together and Esc cancels the edits. Mass ranges in `MeV` and decay products are editable, and blank fields accept any value. You can apply filters with an empty search box, then type a name to narrow the results. The browser remembers the particle filters when you switch to text search.
+
+For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. Key 6 returns to the matching channels from the particle's other detail views.
+
 Press `c` in the detail pane to copy the canonical name when a single particle is selected. Press `i` to copy the PDG ID. Clipboard delivery uses OSC 52 and depends on terminal support. The browser uses the same `--db-path`, `--offline`, and `--edition` options as the CLI queries. The `tui` Cargo feature is enabled by default. To build the binary without the browser, use `--no-default-features --features ratio`.
 
 ### Shell completion

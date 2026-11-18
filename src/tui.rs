@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     io::{self, IsTerminal},
     time::{Duration, Instant},
@@ -14,7 +15,7 @@ use crossterm::{
     execute,
 };
 use pdg_rs::{
-    OwnedParticleSearchHit, ParticleSearchHit, ParticleSearchQuery, Pdg, TextSearchResult,
+    OwnedDecayChannelMatch, ParticleSearchQuery, ParticleSummary, Pdg, PdgResult, TextSearchResult,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -27,7 +28,9 @@ use ratatui::{
 use crate::{CliError, CliResult, DatabaseOptions, TuiCommand, open_pdg};
 
 mod detail;
+mod filters;
 use detail::{Detail, View};
+use filters::{AppliedFilters, EditorAction, FilterEditor};
 
 const RESULT_LIMIT: usize = 50;
 const SEARCH_DELAY: Duration = Duration::from_millis(120);
@@ -70,6 +73,10 @@ fn drive(terminal: &mut DefaultTerminal, app: &mut App, db: &Pdg) -> CliResult<(
                 match app.key(db, key)? {
                     Action::None => {}
                     Action::Quit => return Ok(()),
+                    Action::ApplyFilters => {
+                        terminal.draw(|frame| app.draw(frame, db))?;
+                        app.apply_filters(db);
+                    }
                     Action::Copy(value) => {
                         app.notice = Some(
                             match execute!(io::stdout(), CopyToClipboard::to_clipboard_from(&value))
@@ -90,12 +97,73 @@ fn drive(terminal: &mut DefaultTerminal, app: &mut App, db: &Pdg) -> CliResult<(
 enum Action {
     None,
     Quit,
+    ApplyFilters,
     Copy(String),
 }
 
 enum Hit {
-    Particle(OwnedParticleSearchHit),
+    Particle(ParticleHit),
     Text(TextSearchResult),
+}
+
+struct ParticleHit {
+    particle: ParticleSummary,
+    matched_name: Option<String>,
+    matching_decays: Vec<OwnedDecayChannelMatch>,
+}
+
+fn particle_hits(db: &Pdg, name: &str, filters: Option<&AppliedFilters>) -> PdgResult<Vec<Hit>> {
+    if name.is_empty() {
+        return Ok(filters
+            .into_iter()
+            .flat_map(|filters| &filters.hits)
+            .take(RESULT_LIMIT)
+            .map(|hit| {
+                Hit::Particle(ParticleHit {
+                    particle: hit.particle.clone(),
+                    matched_name: None,
+                    matching_decays: hit.matching_decays.clone(),
+                })
+            })
+            .collect());
+    }
+
+    // The physics query is independent of name rank. Intersect the ranked results
+    // with the cached physics matches before applying the browser's result limit.
+    let eligible = filters.map(|filters| {
+        filters
+            .hits
+            .iter()
+            .map(|hit| (particle_key(&hit.particle), &hit.matching_decays))
+            .collect::<HashMap<_, _>>()
+    });
+    Ok(db
+        .find_particles(name, ParticleSearchQuery::new())?
+        .into_iter()
+        .filter_map(|hit| {
+            let matching_decays = match &eligible {
+                Some(eligible) => eligible
+                    .get(&(
+                        hit.particle.pdgid.as_str(),
+                        hit.particle.name.as_str(),
+                        hit.particle.mcid,
+                    ))
+                    .copied()?
+                    .clone(),
+                None => Vec::new(),
+            };
+            Some(Hit::Particle(ParticleHit {
+                particle: ParticleSummary::from(&hit.particle),
+                matched_name: Some(hit.matched_name),
+                matching_decays,
+            }))
+        })
+        .take(RESULT_LIMIT)
+        .collect())
+}
+
+fn particle_key(particle: &ParticleSummary) -> (&str, &str, Option<isize>) {
+    (&particle.pdgid, &particle.name, particle.mcid)
 }
 
 impl Hit {
@@ -124,8 +192,16 @@ impl Hit {
                 if hit.particle.description != hit.particle.name {
                     lines.push(Line::raw(hit.particle.description.as_str()));
                 }
-                if hit.matched_name != hit.particle.name {
-                    lines.push(Line::raw(format!("Matched {}", hit.matched_name)));
+                if let Some(spelling) = &hit.matched_name
+                    && spelling != &hit.particle.name
+                {
+                    lines.push(Line::raw(format!("Matched {spelling}")));
+                }
+                if !hit.matching_decays.is_empty() {
+                    lines.push(Line::raw(format!(
+                        "Matching decay channels · {}",
+                        hit.matching_decays.len()
+                    )));
                 }
             }
             Self::Text(hit) => lines.push(Line::raw(hit.snippet.as_str())),
@@ -157,6 +233,9 @@ struct App {
     hits: Vec<Hit>,
     results: ListState,
     detail: Option<Detail>,
+    previous_detail: Option<Detail>,
+    filters: Option<AppliedFilters>,
+    filter_editor: Option<FilterEditor>,
     pending: Option<Instant>,
     notice: Option<String>,
     page: u16,
@@ -173,6 +252,9 @@ impl App {
             hits: Vec::new(),
             results: ListState::default(),
             detail: None,
+            previous_detail: None,
+            filters: None,
+            filter_editor: None,
             pending: Some(Instant::now()),
             notice: None,
             page: 1,
@@ -198,26 +280,55 @@ impl App {
 
     fn search(&mut self, db: &Pdg) -> CliResult<()> {
         self.pending = None;
-        let query = self.input.text.trim();
-        if query.is_empty() {
-            return Ok(());
-        }
-        self.hits = match self.mode {
-            Mode::Particles => db
-                .find_particles(query, ParticleSearchQuery::new())?
-                .into_iter()
-                .take(RESULT_LIMIT)
-                .map(ParticleSearchHit::into_owned)
-                .map(Hit::Particle)
-                .collect(),
+        let name = self.input.value();
+        let hits = match self.mode {
+            Mode::Particles => particle_hits(db, name, self.filters.as_ref())?,
+            Mode::Text if name.is_empty() => Vec::new(),
             Mode::Text => db
-                .search_text_with_limit(query, Some(RESULT_LIMIT))?
+                .search_text_with_limit(name, Some(RESULT_LIMIT))?
                 .into_iter()
                 .map(Hit::Text)
                 .collect(),
         };
-        self.results.select((!self.hits.is_empty()).then_some(0));
+        self.set_hits(hits);
         Ok(())
+    }
+
+    fn set_hits(&mut self, hits: Vec<Hit>) {
+        let selected = if let Some(Hit::Particle(previous)) = self.selected_hit() {
+            hits.iter().position(|hit| {
+                matches!(hit, Hit::Particle(result)
+                if particle_key(&result.particle) == particle_key(&previous.particle))
+            })
+        } else {
+            None
+        };
+        self.results
+            .select(selected.or_else(|| (!hits.is_empty()).then_some(0)));
+        self.hits = hits;
+    }
+
+    fn apply_filters(&mut self, db: &Pdg) {
+        let Some(editor) = &mut self.filter_editor else {
+            return;
+        };
+        let result = editor.apply(db).and_then(|filters| {
+            let hits = particle_hits(db, self.input.value(), filters.as_ref())?;
+            Ok((filters, hits))
+        });
+        match result {
+            Ok((filters, hits)) => {
+                self.filter_editor = None;
+                self.filters = filters;
+                self.pending = None;
+                self.notice = None;
+                self.set_hits(hits);
+            }
+            Err(error) => {
+                editor.error = Some(error.to_string());
+                editor.applying = false;
+            }
+        }
     }
 
     fn selected_hit(&self) -> Option<&Hit> {
@@ -240,7 +351,9 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
-        if self.input.insert(text) {
+        if let Some(editor) = &mut self.filter_editor {
+            editor.paste(text);
+        } else if self.input.insert(text) {
             self.schedule_search();
         }
     }
@@ -255,15 +368,26 @@ impl App {
             return Ok(Action::None);
         }
         self.notice = None;
+        if let Some(editor) = &mut self.filter_editor {
+            return Ok(match editor.key(key) {
+                EditorAction::Continue => Action::None,
+                EditorAction::Cancel => {
+                    self.filter_editor = None;
+                    Action::None
+                }
+                EditorAction::Apply => Action::ApplyFilters,
+            });
+        }
         if let Some(detail) = &mut self.detail {
             match key.code {
-                KeyCode::Esc => self.detail = None,
-                KeyCode::Up => detail.scroll = detail.scroll.saturating_sub(1),
-                KeyCode::Down => detail.scroll = detail.scroll.saturating_add(1),
-                KeyCode::PageUp => detail.scroll = detail.scroll.saturating_sub(self.page),
-                KeyCode::PageDown => detail.scroll = detail.scroll.saturating_add(self.page),
-                KeyCode::Home => detail.scroll = 0,
-                KeyCode::End => detail.scroll = u16::MAX,
+                KeyCode::Esc => self.detail = self.previous_detail.take(),
+                KeyCode::Enter => {
+                    if let Some(pdgid) = detail.selected_channel()
+                        && let Some(channel) = Detail::open_channel(db, pdgid)?
+                    {
+                        self.previous_detail = self.detail.replace(channel);
+                    }
+                }
                 KeyCode::Char('c') => return Ok(Action::Copy(detail.name_or_id().to_owned())),
                 KeyCode::Char('i') => return Ok(Action::Copy(detail.id().to_owned())),
                 KeyCode::Char(key) => {
@@ -271,11 +395,14 @@ impl App {
                         detail.load(db, view)?;
                     }
                 }
-                _ => {}
+                code => detail.navigate(code, self.page),
             }
         } else {
             match key.code {
                 KeyCode::Esc => return Ok(Action::Quit),
+                KeyCode::F(2) if self.mode == Mode::Particles => {
+                    self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
+                }
                 KeyCode::Tab => {
                     self.mode = if self.mode == Mode::Particles {
                         Mode::Text
@@ -321,12 +448,23 @@ impl App {
         }
         let wide = area.width >= 80;
         let footer = self.footer(area.width);
+        let filters = if self.mode == Mode::Particles {
+            self.filters.as_ref().map(|filters| {
+                Paragraph::new(format!(" {} ", filters.summary)).wrap(Wrap { trim: true })
+            })
+        } else {
+            None
+        };
+        let filter_rows = filters
+            .as_ref()
+            .map_or(0, |bar| if bar.line_count(area.width) > 1 { 2 } else { 1 });
         let footer_rows = u16::try_from(footer.line_count(area.width))
             .unwrap_or(u16::MAX)
-            .min(area.height.saturating_sub(7));
-        let [header, input, body, footer_area] = Layout::vertical([
+            .min(area.height.saturating_sub(7 + filter_rows));
+        let [header, input, filter_area, body, footer_area] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(3),
+            Constraint::Length(filter_rows),
             Constraint::Min(1),
             Constraint::Length(footer_rows),
         ])
@@ -345,6 +483,9 @@ impl App {
             header,
         );
         self.draw_input(frame, input);
+        if let Some(filters) = filters {
+            frame.render_widget(filters, filter_area);
+        }
         if wide {
             let [results, details] =
                 Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)])
@@ -357,29 +498,23 @@ impl App {
             self.draw_results(frame, body);
         }
         frame.render_widget(footer, footer_area);
+        if let Some(editor) = &mut self.filter_editor {
+            editor.draw(frame, area, self.accent);
+        }
     }
 
     fn draw_input(&self, frame: &mut Frame<'_>, area: Rect) {
         let block =
             Block::bordered().title(format!(" Search {} ", self.mode.label().to_lowercase()));
-        let block = if self.detail.is_none() {
+        let focused = self.detail.is_none() && self.filter_editor.is_none();
+        let block = if focused {
             block.border_style(self.accent)
         } else {
             block
         };
         let inner = block.inner(area);
-        let before_cursor = &self.input.text[..self.input.cursor];
-        let column = u16::try_from(Line::raw(before_cursor).width()).unwrap_or(u16::MAX);
-        let offset = column.saturating_sub(inner.width.saturating_sub(1));
-        frame.render_widget(
-            Paragraph::new(self.input.text.as_str())
-                .block(block)
-                .scroll((0, offset)),
-            area,
-        );
-        if self.detail.is_none() && inner.width > 0 {
-            frame.set_cursor_position((inner.x + (column - offset), inner.y));
-        }
+        frame.render_widget(block, area);
+        self.input.draw(frame, inner, "", focused);
     }
 
     fn draw_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -402,6 +537,10 @@ impl App {
 
     fn draw_detail(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if let Some(detail) = &mut self.detail {
+            if detail.view == View::Matches {
+                detail.draw_matches(frame, area, self.accent);
+                return;
+            }
             let block = Block::bordered()
                 .title(format!(" {} · {} ", detail.id(), detail.view.label()))
                 .border_style(self.accent);
@@ -436,30 +575,39 @@ impl App {
             lines.push(Line::raw(status));
         }
         if let Some(detail) = &self.detail {
-            if width < 64 {
+            let compact = width < 64;
+            if detail.view == View::Matches {
+                lines.push(Line::raw("↑↓ Select  Enter Open channel  Esc Back"));
+            }
+            let mut views = if compact {
                 lines.push(Line::styled("1 Overview  2 Mass  3 Decays", self.accent));
-                let views = if detail.has_text() {
-                    "4 Measures  5 Refs  0 Text"
-                } else {
-                    "4 Measures  5 Refs"
-                };
-                lines.push(Line::styled(views, self.accent));
-                lines.push(Line::raw("c Name  i ID  Esc Back"));
+                "4 Measures  5 Refs".to_owned()
             } else {
-                let views = if detail.has_text() {
-                    "0 Text  1 Overview  2 Mass  3 Decays  4 Measurements  5 References"
+                "1 Overview  2 Mass  3 Decays  4 Measurements  5 References".to_owned()
+            };
+            if detail.has_text() {
+                views.push_str("  0 Text");
+            }
+            if detail.has_matches() {
+                views.push_str("  6 Matches");
+            }
+            lines.push(Line::styled(views, self.accent));
+            if detail.view != View::Matches {
+                lines.push(Line::raw(if compact {
+                    "c Name  i ID  Esc Back"
                 } else {
-                    "1 Overview  2 Mass  3 Decays  4 Measurements  5 References"
-                };
-                lines.push(Line::styled(views, self.accent));
-                lines.push(Line::raw(
-                    "↑↓ Scroll  PgUp/PgDn Page  c Copy name  i Copy ID  Esc Back",
-                ));
+                    "↑↓ Scroll  PgUp/PgDn Page  c Copy name  i Copy ID  Esc Back"
+                }));
             }
         } else {
-            lines.push(Line::raw(
-                "Tab Switch search  ↑↓ Select  Enter Open  Esc Quit",
-            ));
+            let filters = if self.mode == Mode::Particles {
+                "F2 Filters  "
+            } else {
+                ""
+            };
+            lines.push(Line::raw(format!(
+                "{filters}Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
+            )));
         }
         Paragraph::new(lines).wrap(Wrap { trim: true })
     }
@@ -471,7 +619,7 @@ impl App {
         if self.detail.is_some() {
             return String::new();
         }
-        if self.input.text.trim().is_empty() {
+        if self.input.value().is_empty() && (self.mode == Mode::Text || self.filters.is_none()) {
             return match self.mode {
                 Mode::Particles => "Type a name or alias, such as f980.".into(),
                 Mode::Text => "Search PDG descriptions, text, and footnotes.".into(),
@@ -492,13 +640,31 @@ impl App {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SearchInput {
     text: String,
     cursor: usize,
 }
 
 impl SearchInput {
+    fn value(&self) -> &str {
+        self.text.trim()
+    }
+
+    fn draw(&self, frame: &mut Frame<'_>, area: Rect, placeholder: &str, focused: bool) {
+        let before_cursor = &self.text[..self.cursor];
+        let column = u16::try_from(Line::raw(before_cursor).width()).unwrap_or(u16::MAX);
+        let offset = column.saturating_sub(area.width.saturating_sub(1));
+        let line = if self.text.is_empty() {
+            Line::raw(placeholder).dim()
+        } else {
+            Line::raw(self.text.as_str())
+        };
+        frame.render_widget(Paragraph::new(line).scroll((0, offset)), area);
+        if focused && area.width > 0 && area.height > 0 {
+            frame.set_cursor_position((area.x + (column - offset), area.y));
+        }
+    }
     fn insert(&mut self, text: &str) -> bool {
         let text = text
             .chars()
@@ -561,13 +727,17 @@ impl SearchInput {
 mod tests {
     use super::*;
 
-    #[test]
-    fn browser_retains_the_ranked_result_when_returning_from_a_detail() {
-        let db = Pdg::open_path(concat!(
+    fn test_db() -> Pdg {
+        Pdg::open_path(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/data/pdgall-2025-v0.2.2.sqlite",
         ))
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn browser_retains_the_ranked_result_when_returning_from_a_detail() {
+        let db = test_db();
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let mut app = App::new("f980", false);
         app.search(&db).unwrap();
@@ -583,6 +753,90 @@ mod tests {
         app.key(&db, key(KeyCode::Esc)).unwrap();
         assert!(app.detail.is_none());
         assert_eq!(app.input.text, "f980");
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+    }
+
+    #[test]
+    fn filters_support_blank_queries_and_open_the_recorded_channel() {
+        let db = test_db();
+        let mut app = App::new("", false);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(&db, key(KeyCode::F(2))).unwrap();
+        app.key(&db, key(KeyCode::Char(' '))).unwrap();
+        app.key(&db, key(KeyCode::End)).unwrap();
+        app.key(&db, key(KeyCode::Up)).unwrap();
+        assert!(matches!(
+            app.key(&db, key(KeyCode::Enter)).unwrap(),
+            Action::None
+        ));
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        for _ in 0..5 {
+            app.key(&db, key(KeyCode::Right)).unwrap();
+        }
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.paste("900..2000");
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.paste("KS,KS");
+        assert!(matches!(
+            app.key(&db, key(KeyCode::Enter)).unwrap(),
+            Action::ApplyFilters
+        ));
+        app.apply_filters(&db);
+        assert!(app.filter_editor.is_none());
+        assert_eq!(app.hits.len(), 27);
+        assert_eq!(app.input.value(), "");
+
+        app.paste("f980");
+        app.search(&db).unwrap();
+        let cli = db
+            .find_particles(
+                "f980",
+                ParticleSearchQuery::new()
+                    .class(pdg_rs::ParticleClass::Meson)
+                    .charge(pdg_rs::Charge::Neutral)
+                    .mass_range_mev(900.0, 2000.0)
+                    .decays_to(["KS", "KS"]),
+            )
+            .unwrap();
+        assert_eq!(
+            app.hits.iter().map(Hit::pdgid).collect::<Vec<_>>(),
+            cli.iter()
+                .map(|hit| hit.particle.pdgid.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_channel(),
+            Some("M003.1")
+        );
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003.1");
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_channel(),
+            Some("M003.1")
+        );
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert!(app.detail.is_none());
+
+        app.key(&db, key(KeyCode::F(2))).unwrap();
+        for _ in 0..4 {
+            app.key(&db, key(KeyCode::Tab)).unwrap();
+        }
+        app.paste("invalid");
+        app.apply_filters(&db);
+        assert!(app.filter_editor.as_ref().unwrap().error.is_some());
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        assert!(app.mode == Mode::Text && app.filters.is_some());
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
     }
 
