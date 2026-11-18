@@ -344,6 +344,8 @@ impl From<&PdgFootnote> for FootnoteDto {
 pub(crate) struct ShowDto {
     pub(crate) entry: PdgIdEntryDto,
     pub(crate) particle: Option<ParticleDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) variants: Vec<ParticleDto>,
     pub(crate) data: Vec<DataEntryDto>,
     pub(crate) children: Vec<PdgIdEntryDto>,
     pub(crate) related_entries: Vec<PdgIdEntryDto>,

@@ -8,8 +8,10 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
 
 mod database;
+mod lookup;
 mod models;
 mod particle_search;
+pub use lookup::{Lookup, LookupSelector};
 pub use models::*;
 pub use particle_search::{ParticleMatchKind, ParticleSearchHit};
 
@@ -89,7 +91,7 @@ pub enum PdgError {
 /// Handle for querying the Particle Data Group database.
 ///
 /// Create a handle with [`Pdg::open`], then use lookup methods such as
-/// [`Pdg::particle`], [`Pdg::mcid`], [`Pdg::find_particles`], and
+/// [`Pdg::lookup`], [`Pdg::find_particles`], and
 /// [`Pdg::search_text`] to retrieve typed records.
 ///
 /// # Examples
@@ -228,7 +230,7 @@ impl Pdg {
 
     /// Looks up a particle by its PDG item name.
     ///
-    /// Use [`Pdg::particle_by_pdgid`] when you already have a PDG identifier,
+    /// Use [`Pdg::lookup`] when you already have a PDG identifier,
     /// or [`Pdg::mcid`] when you have a Monte Carlo particle ID.
     ///
     /// # Errors
@@ -248,6 +250,7 @@ impl Pdg {
     }
 
     /// Looks up a particle by PDG identifier, case-insensitively.
+    /// Use [`Pdg::lookup`] with [`LookupSelector::PdgId`] to retrieve every variant.
     ///
     /// # Errors
     ///
@@ -1215,6 +1218,73 @@ mod tests {
             "/data/pdgall-2025-v0.2.2.sqlite"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn lookup_resolves_particle_names_aliases_and_mcids() {
+        let db = test_pdg();
+        for (selector, pdgid, name) in [
+            (LookupSelector::Name("π⁺"), "S008", "pi+"),
+            (LookupSelector::Name("X(3872)"), "M176", "chi_c1(3872)"),
+            (LookupSelector::Mcid(-211), "S008", "pi-"),
+        ] {
+            let Lookup::Found { entry, particles } = db.lookup(selector).unwrap() else {
+                panic!("{selector:?} should resolve");
+            };
+            assert_eq!(entry.pdgid, pdgid);
+            assert_eq!(particles.len(), 1);
+            assert_eq!(particles[0].name, name);
+        }
+    }
+
+    #[test]
+    fn lookup_returns_all_variants_and_supports_non_particle_entries() {
+        let db = test_pdg();
+        let Lookup::Found { entry, particles } =
+            db.lookup(LookupSelector::PdgId(" m009 ")).unwrap()
+        else {
+            panic!("M009 should resolve");
+        };
+        assert_eq!(entry.pdgid, "M009");
+        let names = particles
+            .iter()
+            .map(|particle| particle.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["rho(770)+", "rho(770)-", "rho(770)0"]);
+
+        let Lookup::Found { entry, particles } =
+            db.lookup(LookupSelector::PdgId("S008245")).unwrap()
+        else {
+            panic!("S008245 should resolve");
+        };
+        assert_eq!(entry.data_type, DataType::Section);
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn lookup_surfaces_ambiguity_and_leaves_typos_as_suggestions() {
+        let db = test_pdg();
+        let Lookup::Ambiguous(choices) =
+            db.lookup(LookupSelector::Name("P_c_cbar(4312)+")).unwrap()
+        else {
+            panic!("multiple entries share this name");
+        };
+        let ids = choices
+            .iter()
+            .map(|particle| particle.pdgid.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["B185", "B205"]);
+
+        let Lookup::Ambiguous(choices) = db.lookup(LookupSelector::Name("pion")).unwrap() else {
+            panic!("pion refers to several charge states");
+        };
+        assert_eq!(choices.len(), 3);
+
+        let Lookup::Missing { suggestions } = db.lookup(LookupSelector::Name("prtoon")).unwrap()
+        else {
+            panic!("a typo should not select a particle");
+        };
+        assert_eq!(suggestions[0].particle.name, "p");
     }
 
     #[test]
