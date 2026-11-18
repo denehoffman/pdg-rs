@@ -10,7 +10,8 @@ pub use pdgparticle::{
 
 mod pdgsearch;
 pub use pdgsearch::{
-    DecayChannelMatch, DecayMatchMode, DecayStateExpansion, ParticleFilterHit, ParticleSearchQuery,
+    DecayChannelMatch, DecayMatchMode, DecayProductSummary, DecayStateExpansion,
+    OwnedDecayChannelMatch, OwnedParticleFilterHit, ParticleFilterHit, ParticleSearchQuery,
     QuantumFilter,
 };
 

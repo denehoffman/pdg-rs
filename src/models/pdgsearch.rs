@@ -1,6 +1,6 @@
 use crate::{
-    AngularMomentum, Charge, DataType, DecayProduct, Isospin, Parity, ParticleClass, ParticleType,
-    PdgError, PdgId, PdgParticle, PdgResult,
+    AngularMomentum, Charge, DataType, DecayProduct, Isospin, Parity, ParticleClass,
+    ParticleSummary, ParticleType, PdgError, PdgId, PdgParticle, PdgResult,
 };
 
 /// A particle returned by a filter search, with the channels that satisfied its decay filters.
@@ -10,6 +10,30 @@ pub struct ParticleFilterHit<'pdg> {
     pub particle: PdgParticle<'pdg>,
     /// Matching PDG channels, empty for a search without decay filters.
     pub matching_decays: Vec<DecayChannelMatch<'pdg>>,
+}
+
+impl ParticleFilterHit<'_> {
+    /// Detaches this hit from the database so it can be stored or serialized.
+    #[must_use]
+    pub fn into_owned(self) -> OwnedParticleFilterHit {
+        OwnedParticleFilterHit {
+            particle: ParticleSummary::from(&self.particle),
+            matching_decays: self
+                .matching_decays
+                .iter()
+                .map(OwnedDecayChannelMatch::from)
+                .collect(),
+        }
+    }
+}
+
+/// A filter search hit that can outlive the database connection.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct OwnedParticleFilterHit {
+    /// Particle identity and quantum numbers.
+    pub particle: ParticleSummary,
+    /// Matching PDG channels, empty for a search without decay filters.
+    pub matching_decays: Vec<OwnedDecayChannelMatch>,
 }
 
 /// A recorded decay channel that satisfied an initial- or final-state filter.
@@ -27,6 +51,55 @@ pub struct DecayChannelMatch<'pdg> {
     pub matched_initial_states: bool,
     /// Whether this channel satisfied the supplied final-state filter.
     pub matched_final_states: bool,
+}
+
+/// A matching decay channel with no database borrow.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct OwnedDecayChannelMatch {
+    /// PDG identifier for the channel.
+    pub pdgid: PdgId,
+    /// Recorded PDG description, including any qualifiers.
+    pub description: String,
+    /// Branching-fraction data type for the channel.
+    pub data_type: DataType,
+    /// Recorded initial and final states with their multiplicities.
+    pub products: Vec<DecayProductSummary>,
+    /// Whether this channel satisfied the supplied initial-state filter.
+    pub matched_initial_states: bool,
+    /// Whether this channel satisfied the supplied final-state filter.
+    pub matched_final_states: bool,
+}
+
+impl From<&DecayChannelMatch<'_>> for OwnedDecayChannelMatch {
+    fn from(channel: &DecayChannelMatch<'_>) -> Self {
+        Self {
+            pdgid: channel.pdgid.clone(),
+            description: channel.description.clone(),
+            data_type: channel.data_type,
+            products: channel
+                .products
+                .iter()
+                .map(|product| DecayProductSummary {
+                    name: product.name.clone(),
+                    is_outgoing: product.is_outgoing,
+                    multiplier: product.multiplier,
+                })
+                .collect(),
+            matched_initial_states: channel.matched_initial_states,
+            matched_final_states: channel.matched_final_states,
+        }
+    }
+}
+
+/// Recorded initial or final state in an owned decay channel.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DecayProductSummary {
+    /// PDG item name.
+    pub name: String,
+    /// Whether this item is an outgoing product.
+    pub is_outgoing: bool,
+    /// Number of occurrences represented by this listing row.
+    pub multiplier: i64,
 }
 
 /// Builder for particle searches run by [`crate::Pdg::search_particles`] and

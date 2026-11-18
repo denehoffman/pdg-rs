@@ -10,12 +10,16 @@ use thiserror::Error;
 mod database;
 mod lookup;
 mod models;
+mod particle_details;
 mod particle_search;
 mod text_search;
 pub use database::PdgDatabaseInfo;
 pub use lookup::{Lookup, LookupSelector};
 pub use models::*;
-pub use particle_search::{ParticleMatchKind, ParticleSearchHit};
+pub use particle_details::{
+    DataValue, ParticleDetailSelection, ParticleDetails, ParticlePropertyDetail, ParticleSummary,
+};
+pub use particle_search::{OwnedParticleSearchHit, ParticleMatchKind, ParticleSearchHit};
 
 /// The edition of the pinned default download. Use [`Pdg::edition`] for an opened database.
 pub const LATEST_EDITION: &str = "2026";
@@ -1258,6 +1262,84 @@ mod tests {
 
     fn test_pdg() -> Pdg {
         Pdg::open_path(TEST_DB_PATH).unwrap()
+    }
+
+    #[test]
+    fn particle_details_preserve_section_values_after_closing_the_database() {
+        let details = {
+            let db = test_pdg().with_edition("2024").unwrap();
+            let particle = db.particle("a_0(980)0").unwrap().unwrap();
+            particle
+                .details(ParticleDetailSelection::Properties(&[
+                    DataType::Mass,
+                    DataType::Mass,
+                ]))
+                .unwrap()
+        };
+        assert_eq!(details.particle.name, "a_0(980)0");
+        assert_eq!(details.edition, "2024");
+        assert_eq!(details.properties.len(), 1);
+        let mass = details.property(DataType::Mass).unwrap();
+        assert!(matches!(mass.source, PropertySource::Section { .. }));
+        assert_eq!(mass.value.edition, "2024");
+        assert_eq!(mass.value.unit, "MeV");
+        assert!(mass.value.error_positive.is_some());
+        assert!(mass.measurements.is_none());
+
+        let json = serde_json::to_value(details).unwrap();
+        assert_eq!(json["properties"][0]["data_type"], "M");
+        assert_eq!(json["properties"][0]["source"]["kind"], "section");
+        assert!(json["properties"][0].get("measurements").is_none());
+    }
+
+    #[test]
+    fn particle_details_load_measurements_for_the_requested_property() {
+        let db = test_pdg();
+        let particle = db.particle("pi+").unwrap().unwrap();
+        let details = particle
+            .details(ParticleDetailSelection::Measurements(&[DataType::Mass]))
+            .unwrap();
+        assert_eq!(details.properties.len(), 1);
+        let mass = details.property(DataType::Mass).unwrap();
+        let measurements = mass.measurements.as_ref().unwrap();
+        assert!(!measurements.is_empty());
+        assert!(
+            measurements
+                .iter()
+                .all(|measurement| measurement.pdgid == mass.value.pdgid)
+        );
+        let json = serde_json::to_value(details).unwrap();
+        let reference = &json["properties"][0]["measurements"][0]["reference"];
+        assert!(reference["document_id"].as_str().is_some());
+    }
+
+    #[test]
+    fn owned_particle_hits_preserve_ranking_and_decay_matches() {
+        let (ranked, filtered) = {
+            let db = test_pdg();
+            let filters = ParticleSearchQuery::new()
+                .mcid(9_010_221)
+                .decays_to(["KS", "KS"]);
+            let ranked = db
+                .find_particles("f_0(980)0", filters.clone())
+                .unwrap()
+                .remove(0)
+                .into_owned();
+            let filtered = db
+                .search_particle_hits(filters)
+                .unwrap()
+                .remove(0)
+                .into_owned();
+            (ranked, filtered)
+        };
+        assert_eq!(ranked.kind, ParticleMatchKind::ExactName);
+        assert_eq!(ranked.matched_name, "f_0(980)0");
+        assert_eq!(ranked.particle.pdgid, "M003");
+        assert_eq!(ranked.particle.pdgid, filtered.particle.pdgid);
+        let ranked = serde_json::to_value(ranked).unwrap();
+        let filtered = serde_json::to_value(filtered).unwrap();
+        assert_eq!(ranked["matching_decays"], filtered["matching_decays"]);
+        assert_eq!(ranked["matching_decays"][0]["pdgid"], "M003.1");
     }
 
     #[test]

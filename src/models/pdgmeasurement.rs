@@ -5,7 +5,7 @@ use rusqlite::Row;
 use crate::{LimitType, PdgFootnote, PdgId};
 
 /// Bibliographic reference for a PDG measurement.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgReference {
     /// PDG document identifier.
     pub document_id: String,
@@ -22,7 +22,7 @@ pub struct PdgReference {
 }
 
 /// Experimental or observational measurement supporting a PDG data entry.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgMeasurement {
     /// PDG identifier measured by this row.
     pub pdgid: PdgId,
@@ -48,6 +48,7 @@ pub struct PdgMeasurement {
     pub values: Vec<PdgMeasurementValue>,
     /// Footnotes attached to this measurement.
     pub footnotes: Vec<PdgFootnote>,
+    #[serde(skip)]
     pub(crate) id: isize,
 }
 
@@ -81,7 +82,7 @@ impl TryFrom<&Row<'_>> for PdgMeasurement {
 }
 
 /// Individual value reported by a [`PdgMeasurement`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgMeasurementValue {
     /// Column name for multi-column measurement rows.
     pub column_name: Option<String>,

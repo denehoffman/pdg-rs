@@ -33,6 +33,12 @@ pub enum ValueType {
     Internal,
 }
 
+impl serde::Serialize for ValueType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.to_code())
+    }
+}
+
 impl ValueType {
     /// Returns the compact PDG database code for this value type.
     #[must_use]
@@ -123,6 +129,12 @@ pub enum LimitType {
     Range,
     /// An excluded range.
     RangeExclusion,
+}
+
+impl serde::Serialize for LimitType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.to_code())
+    }
 }
 
 impl LimitType {
@@ -241,6 +253,12 @@ pub enum DataType {
     Section,
     /// Unknown or unclassified data.
     Other,
+}
+
+impl serde::Serialize for DataType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.to_code())
+    }
 }
 
 impl FromSql for DataType {
