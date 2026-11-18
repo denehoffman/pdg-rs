@@ -11,6 +11,7 @@ mod database;
 mod lookup;
 mod models;
 mod particle_search;
+mod text_search;
 pub use database::PdgDatabaseInfo;
 pub use lookup::{Lookup, LookupSelector};
 pub use models::*;
@@ -307,52 +308,6 @@ impl Pdg {
         &self.conn
     }
 
-    fn initialize_text_search(&self) -> PdgResult<()> {
-        // Check SQLite's schema so a caller rollback cannot leave a stale readiness flag.
-        let initialized: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name = 'pdg_text_search')",
-            [],
-            |row| row.get(0),
-        )?;
-        if initialized {
-            return Ok(());
-        }
-
-        // The savepoint makes creation and population atomic, including inside a caller transaction.
-        self.conn.execute_batch("SAVEPOINT pdg_rs_text_index")?;
-        let result = self.conn.execute_batch(
-            "CREATE VIRTUAL TABLE temp.pdg_text_search USING fts5(
-                body,
-                source UNINDEXED,
-                pdgid UNINDEXED,
-                text_type UNINDEXED,
-                sort UNINDEXED,
-                tokenize = 'unicode61'
-            );
-            INSERT INTO temp.pdg_text_search(body, source, pdgid, text_type, sort)
-                SELECT description, 'description', pdgid, NULL, sort
-                FROM main.pdgid
-                WHERE description != '';
-            INSERT INTO temp.pdg_text_search(body, source, pdgid, text_type, sort)
-                SELECT text, 'text', pdgid, type, sort
-                FROM main.pdgtext
-                WHERE text IS NOT NULL AND text != '';
-            INSERT INTO temp.pdg_text_search(body, source, pdgid, text_type, sort)
-                SELECT text, 'footnote', pdgid, NULL, footnote_index
-                FROM main.pdgfootnote
-                WHERE text IS NOT NULL AND text != '';
-            RELEASE pdg_rs_text_index;",
-        );
-        if result.is_err() {
-            // SQLite may already have rolled back after a fatal error. Preserve the original error.
-            let _ = self
-                .conn
-                .execute_batch("ROLLBACK TO pdg_rs_text_index; RELEASE pdg_rs_text_index;");
-        }
-        result?;
-        Ok(())
-    }
-
     /// Looks up a particle by its PDG item name.
     ///
     /// Use [`Pdg::lookup`] when you already have a PDG identifier,
@@ -414,115 +369,6 @@ impl Pdg {
         Ok(stmt
             .query_row([&pdgid], |row| PdgIdEntry::try_from(row))
             .optional()?)
-    }
-
-    /// Searches descriptions, text blocks, and footnotes with `SQLite` FTS5.
-    ///
-    /// Non-alphanumeric separators are normalized into individual quoted search
-    /// terms before querying the index. The temporary index is built on demand.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use pdg_rs::{Pdg, TextSearchSource};
-    ///
-    /// # fn main() -> pdg_rs::PdgResult<()> {
-    /// let pdg = Pdg::open()?;
-    /// let results = pdg.search_text("K(S)0 mean life")?;
-    ///
-    /// assert!(results.iter().any(|result| {
-    ///     result.source == TextSearchSource::Description
-    /// }));
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error if the index cannot be initialized or the search fails.
-    pub fn search_text(&self, query: impl Into<String>) -> PdgResult<Vec<TextSearchResult>> {
-        self.search_text_with_limit(query, None)
-    }
-
-    /// Searches the same text sources as [`Pdg::search_text`] with a result limit.
-    ///
-    /// `None` returns all hits. A limit of zero returns an empty list. Any positive
-    /// limit is applied after ranking, before the rows are read into Rust.
-    ///
-    /// # Errors
-    /// Returns a database error if the index cannot be initialized or the search fails.
-    pub fn search_text_with_limit(
-        &self,
-        query: impl Into<String>,
-        limit: Option<usize>,
-    ) -> PdgResult<Vec<TextSearchResult>> {
-        if limit == Some(0) {
-            return Ok(Vec::new());
-        }
-        let Some(query) = fts_query(&query.into()) else {
-            return Ok(Vec::new());
-        };
-        self.initialize_text_search()?;
-        let limit = limit.map_or(-1, |limit| i64::try_from(limit).unwrap_or(i64::MAX));
-
-        let mut stmt = self.conn.prepare(
-            "SELECT
-                pdgid,
-                source,
-                text_type,
-                sort,
-                body,
-                snippet(pdg_text_search, 0, '[', ']', '...', 24),
-                bm25(pdg_text_search) AS score
-            FROM temp.pdg_text_search
-            WHERE pdg_text_search MATCH ?1
-            ORDER BY score, source, sort, rowid
-            LIMIT ?2",
-        )?;
-        Ok(stmt
-            .query_map(rusqlite::params![query, limit], |row| {
-                let pdgid = row.get::<_, PdgId>(0)?;
-                let source = row.get::<_, String>(1)?;
-                let text_type = row.get::<_, Option<String>>(2)?;
-                let sort = row.get::<_, Option<isize>>(3)?;
-                let text = row.get::<_, String>(4)?;
-                let snippet = row.get::<_, String>(5)?;
-                let score = row.get::<_, f64>(6)?;
-                let (source, pdg_text) = match source.as_str() {
-                    "text" => {
-                        let text_type = text_type.unwrap_or_default();
-                        let sort = sort.unwrap_or_default();
-                        (
-                            TextSearchSource::Text {
-                                text_type: text_type.clone(),
-                                sort,
-                            },
-                            Some(PdgText {
-                                pdgid: pdgid.clone(),
-                                text_type,
-                                text: Some(text.clone()),
-                                sort,
-                            }),
-                        )
-                    }
-                    "footnote" => (
-                        TextSearchSource::Footnote {
-                            index: sort.unwrap_or_default(),
-                        },
-                        None,
-                    ),
-                    _ => (TextSearchSource::Description, None),
-                };
-                Ok(TextSearchResult {
-                    pdgid,
-                    source,
-                    text,
-                    snippet,
-                    score,
-                    pdg_text,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Looks up a particle by its Monte Carlo particle ID.
@@ -1345,29 +1191,6 @@ fn unit_factor(unit_text: &str, unit: Unit) -> Option<f64> {
     }
 }
 
-fn fts_query(query: &str) -> Option<String> {
-    let mut terms = Vec::new();
-    let mut term = String::new();
-    for ch in query.chars() {
-        if ch.is_alphanumeric() {
-            term.push(ch);
-        } else if !term.is_empty() {
-            terms.push(std::mem::take(&mut term));
-        }
-    }
-    if !term.is_empty() {
-        terms.push(term);
-    }
-
-    (!terms.is_empty()).then(|| {
-        terms
-            .into_iter()
-            .map(|term| format!("\"{term}\""))
-            .collect::<Vec<_>>()
-            .join(" ")
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1796,6 +1619,11 @@ mod tests {
 
         assert!(!results.is_empty());
         assert!(results.iter().any(|result| result.text.contains("K(S)0")));
+
+        let starred = db.search_text_with_limit("K*(892)", Some(1)).unwrap();
+        let ordinary = db.search_text_with_limit("K(892)", Some(1)).unwrap();
+        assert_eq!(starred[0].pdgid, ordinary[0].pdgid);
+        assert_eq!(starred[0].snippet, ordinary[0].snippet);
     }
 
     #[test]
@@ -1823,6 +1651,29 @@ mod tests {
             assert_eq!(limited.snippet, unlimited.snippet);
             assert_eq!(limited.score.to_bits(), unlimited.score.to_bits());
         }
+    }
+
+    #[test]
+    fn text_search_supports_explicit_and_fallback_prefixes() {
+        let db = test_pdg();
+        for query in ["form facto*", "form facto"] {
+            let hits = db.search_text_with_limit(query, Some(5)).unwrap();
+            assert!(hits.iter().any(|hit| hit.pdgid == "S008245"), "{query}");
+            assert!(hits.iter().all(|hit| hit.correction.is_none()), "{query}");
+        }
+    }
+
+    #[test]
+    fn text_search_recovers_a_transposition_and_preserves_exact_results() {
+        let db = test_pdg();
+        let exact = db.search_text_with_limit("form factors", Some(1)).unwrap();
+        let corrected = db.search_text_with_limit("form factros", Some(1)).unwrap();
+        assert_eq!(exact[0].pdgid, "S008245");
+        assert!(exact[0].correction.is_none());
+        assert_eq!(corrected[0].pdgid, exact[0].pdgid);
+        let correction = corrected[0].correction.as_ref().unwrap();
+        assert_eq!(correction.original, "factros");
+        assert_eq!(correction.replacement, "factors");
     }
 
     #[test]

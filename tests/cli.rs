@@ -580,7 +580,9 @@ fn find_text_prints_results() {
         .stdout(contains("Title"))
         .stdout(contains("Match"))
         .stdout(contains("Score").not())
-        .stdout(contains("Source").not())
+        .stdout(contains("Source"))
+        .stdout(contains("Description"))
+        .stdout(contains("Parent S008"))
         .stdout(contains("pi+- FORM FACTORS"));
 }
 
@@ -862,6 +864,28 @@ fn find_text_json_is_valid() {
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert!(value.as_array().unwrap().len() <= 3);
+}
+
+#[test]
+fn find_text_reports_the_correction_and_parent_entry_in_json() {
+    let result = pdg_command()
+        .args([
+            "find",
+            "--text",
+            "form factros",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(hits[0]["pdgid"], "S008245");
+    assert_eq!(hits[0]["title"], "pi+- FORM FACTORS");
+    assert_eq!(hits[0]["parent"]["pdgid"], "S008");
+    assert_eq!(hits[0]["correction"]["original"], "factros");
+    assert_eq!(hits[0]["correction"]["replacement"], "factors");
 }
 
 #[test]

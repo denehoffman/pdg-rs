@@ -62,11 +62,35 @@ pub enum TextSearchSource {
     },
 }
 
+/// The parent PDG entry that provides context for a text hit.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct TextSearchParent {
+    /// Its PDG identifier.
+    pub pdgid: PdgId,
+    /// Its PDG description.
+    pub title: String,
+}
+
+/// The spelling change used to find a text hit after the original search failed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct TextSearchCorrection {
+    /// The original search term.
+    pub original: String,
+    /// The replacement found in the index vocabulary.
+    pub replacement: String,
+}
+
 /// A full-text search hit from [`crate::Pdg::search_text`].
 #[derive(Clone, Debug)]
 pub struct TextSearchResult {
     /// PDG identifier for the matching row.
     pub pdgid: PdgId,
+    /// Description of the matched PDG entry, when available.
+    pub title: Option<String>,
+    /// Parent entry of the matched PDG entry, when available.
+    pub parent: Option<TextSearchParent>,
+    /// The spelling correction that led to this hit, if any.
+    pub correction: Option<TextSearchCorrection>,
     /// Source table and location for the match.
     pub source: TextSearchSource,
     /// Full source text that matched the query.

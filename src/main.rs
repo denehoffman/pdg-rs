@@ -20,6 +20,7 @@ use pdg_rs::{
     AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Lookup, LookupSelector,
     Parity, ParticleClass, ParticleSearchQuery, ParticleType, Pdg, PdgError, PdgFootnote,
     PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgText, TextSearchResult,
+    TextSearchSource,
 };
 use thiserror::Error;
 
@@ -658,7 +659,10 @@ fn run_text(
     let results =
         db.search_text_with_limit(query, output.result_limit(Some(DEFAULT_SEARCH_LIMIT)))?;
     match output.format {
-        OutputFormat::Pretty => print_text_results(&db, &results, show_full_text),
+        OutputFormat::Pretty => {
+            print_text_results(&results, show_full_text);
+            Ok(())
+        }
         OutputFormat::Json => {
             println!(
                 "{}",
@@ -1269,36 +1273,45 @@ fn print_branching_ratios(particle: &PdgParticle<'_>) -> CliResult<()> {
     Ok(())
 }
 
-fn print_text_results(
-    db: &Pdg,
-    results: &[TextSearchResult],
-    show_full_text: bool,
-) -> CliResult<()> {
-    if results.is_empty() {
+fn print_text_results(results: &[TextSearchResult], show_full_text: bool) {
+    let Some(first) = results.first() else {
         println!("{}", "No text results found.".yellow());
-        return Ok(());
+        return;
+    };
+    if let Some(correction) = &first.correction {
+        println!(
+            "Showing matches for {:?} in place of {:?}",
+            correction.replacement, correction.original
+        );
     }
     let mut table = table();
-    table.set_header(["PDG ID", "Title", "Match"]);
+    table.set_header(["PDG ID", "Title", "Source", "Match"]);
     table.set_constraints([
         ColumnConstraint::ContentWidth,
         ColumnConstraint::Boundaries {
             lower: Width::Fixed(24),
             upper: Width::Fixed(46),
         },
+        ColumnConstraint::ContentWidth,
         ColumnConstraint::Boundaries {
             lower: Width::Fixed(35),
             upper: Width::Fixed(72),
         },
     ]);
     for result in results {
-        let title = db
-            .pdgid(&result.pdgid)?
-            .map(|entry| entry.description)
-            .unwrap_or_default();
+        let mut title = result.title.clone().unwrap_or_default();
+        if let Some(parent) = &result.parent {
+            title.push_str(&format!("\nParent {} {}", parent.pdgid, parent.title));
+        }
+        let source = match &result.source {
+            TextSearchSource::Description => "Description".to_owned(),
+            TextSearchSource::Text { .. } => "Text".to_owned(),
+            TextSearchSource::Footnote { index } => format!("Footnote {index}"),
+        };
         table.add_row([
             result.pdgid.to_pdgid_string(),
             title,
+            source,
             if show_full_text {
                 result.text.clone()
             } else {
@@ -1307,7 +1320,6 @@ fn print_text_results(
         ]);
     }
     println!("{table}");
-    Ok(())
 }
 
 fn print_footnotes(footnotes: &[PdgFootnote]) {

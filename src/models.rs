@@ -15,7 +15,10 @@ mod pdgdata;
 pub use pdgdata::DataEntry;
 
 mod pdgmeta;
-pub use pdgmeta::{PdgFootnote, PdgIdEntry, PdgText, TextSearchResult, TextSearchSource};
+pub use pdgmeta::{
+    PdgFootnote, PdgIdEntry, PdgText, TextSearchCorrection, TextSearchParent, TextSearchResult,
+    TextSearchSource,
+};
 
 mod pdgitem;
 pub use pdgitem::{PdgItem, PdgItemChild, PdgItemType};
