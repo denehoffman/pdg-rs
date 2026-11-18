@@ -217,7 +217,8 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
 #[command(
     name = "pdg",
     version,
-    about = "Search the Particle Data Group database"
+    about = "Search the Particle Data Group database",
+    after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --text 'form factors'\n  pdg show S008245"
 )]
 struct Cli {
     /// Require an already cached database instead of downloading it.
@@ -229,10 +230,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Find particles by name and properties, or search PDG text.
+    Find(Box<FindCommand>),
     /// Look up any PDG database ID, such as S008 or S008245.
     Show(ShowCommand),
-    /// Search particles or text.
-    Search(Box<SearchCommand>),
     /// Manage the cached PDG database.
     Db(DbCommand),
     /// Reserved for the future terminal UI.
@@ -258,13 +259,22 @@ enum DbCommands {
 }
 
 #[derive(Parser)]
-struct ParticleCommand {
-    /// Particle name or alias, including common notation and typos.
+#[command(
+    after_help = "Examples:\n  pdg find 'X(3872)'\n  pdg find --class meson --mass 900..1100\n  pdg find --text 'form factors'"
+)]
+struct FindCommand {
+    /// Search PDG descriptions, text, and footnotes using the query.
+    #[arg(long, requires = "query", conflicts_with = "particle_filters")]
+    text: bool,
+    /// Print the full matching text below each snippet.
+    #[arg(long, requires = "text")]
+    show_full_text: bool,
+    /// Search query. Particle names support aliases, common notation, and typos.
     query: Option<String>,
-    #[command(flatten)]
+    #[command(flatten, next_help_heading = "Output options")]
+    output: SearchOutput,
+    #[command(flatten, next_help_heading = "Particle filters")]
     filters: ParticleFilters,
-    #[command(flatten)]
-    output: ParticleOutput,
 }
 
 #[derive(Parser)]
@@ -275,36 +285,9 @@ struct ShowCommand {
     output: ShowOutput,
 }
 
-#[derive(Parser)]
-struct SearchCommand {
-    #[command(subcommand)]
-    command: SearchCommands,
-}
-
-#[derive(Subcommand)]
-enum SearchCommands {
-    /// Search particles by name and particle properties.
-    Particles(ParticleCommand),
-    /// Search PDG descriptions and text entries.
-    Text(TextCommand),
-}
-
-#[derive(Parser)]
-struct TextCommand {
-    /// Full-text search query.
-    query: String,
-    #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-    format: OutputFormat,
-    #[arg(long, default_value_t = 20)]
-    limit: usize,
-    #[arg(long)]
-    all: bool,
-    #[arg(long)]
-    show_full_text: bool,
-}
-
 #[allow(clippy::doc_markdown)]
 #[derive(Parser, Clone)]
+#[group(id = "particle_filters")]
 struct ParticleFilters {
     /// Filter by particle class.
     #[arg(long, value_parser = parse_class)]
@@ -315,6 +298,12 @@ struct ParticleFilters {
     /// Filter by electric charge, e.g. 0, +1, -1, +2/3.
     #[arg(long, allow_hyphen_values = true, value_parser = parse_charge)]
     charge: Option<Charge>,
+    /// Look up a particle by Monte Carlo ID instead of name/search filters.
+    #[arg(long, allow_hyphen_values = true)]
+    mcid: Option<isize>,
+    /// Filter by mass range in MeV, formatted as MIN..MAX.
+    #[arg(long, value_parser = parse_range)]
+    mass: Option<(f64, f64)>,
     /// Filter by isospin; accepts values like 0, 1/2, 1, 3/2, unknown, or missing.
     #[arg(long, value_parser = parse_isospin_filter)]
     isospin: Option<QuantumArg<Isospin>>,
@@ -330,9 +319,6 @@ struct ParticleFilters {
     /// Filter by charge conjugation parity; accepts +, -, unknown, or missing.
     #[arg(long, value_parser = parse_parity_filter)]
     c_parity: Option<QuantumArg<Parity>>,
-    /// Filter by mass range in MeV, formatted as MIN..MAX.
-    #[arg(long, value_parser = parse_range)]
-    mass: Option<(f64, f64)>,
     /// Filter by width range in MeV, formatted as MIN..MAX.
     #[arg(long, value_parser = parse_range)]
     width: Option<(f64, f64)>,
@@ -351,17 +337,14 @@ struct ParticleFilters {
     /// Control whether decay state names are expanded through particle families.
     #[arg(long, value_enum, default_value_t = DecayExpansionArg::Inclusive)]
     decay_expansion: DecayExpansionArg,
-    /// Look up a particle by Monte Carlo ID instead of name/search filters.
-    #[arg(long, allow_hyphen_values = true)]
-    mcid: Option<isize>,
 }
 
 #[derive(Parser, Clone)]
-struct ParticleOutput {
+struct SearchOutput {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
-    /// Maximum number of results to print.
+    /// Maximum number of results to print. Searches with a query default to 20.
     #[arg(long)]
     limit: Option<usize>,
     /// Print all matching results.
@@ -412,23 +395,31 @@ enum QuantumArg<T> {
 fn main() -> CliResult<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
-        Cli::command().print_help()?;
-        println!();
-        return Ok(());
+        return print_help(None);
     };
 
     match command {
+        Commands::Find(command) => run_find(&command, cli.offline),
         Commands::Show(command) => run_show(&command.pdgid, command.output, cli.offline),
-        Commands::Search(command) => match command.command {
-            SearchCommands::Particles(command) => run_particle(&command, cli.offline),
-            SearchCommands::Text(command) => run_text(command, cli.offline),
-        },
         Commands::Db(command) => run_db(&command),
         Commands::Tui => Err(CliError::InvalidArgument(
-            "TUI is not implemented yet; use `pdg show`, `pdg search particles`, `pdg search text`, or `pdg db`"
-                .into(),
+            "TUI is not implemented yet. Use `pdg find`, `pdg show`, or `pdg db`.".into(),
         )),
     }
+}
+
+fn print_help(subcommand: Option<&str>) -> CliResult<()> {
+    let mut root = Cli::command();
+    root.build();
+    let mut command = &mut root;
+    if let Some(name) = subcommand {
+        command = command
+            .find_subcommand_mut(name)
+            .expect("help must name a CLI subcommand");
+    }
+    command.print_help()?;
+    println!();
+    Ok(())
 }
 
 fn open_pdg(offline: bool) -> CliResult<Pdg> {
@@ -479,19 +470,23 @@ fn run_db(command: &DbCommand) -> CliResult<()> {
     }
 }
 
-fn run_particle(command: &ParticleCommand, offline: bool) -> CliResult<()> {
-    if command.query.is_none() && !has_particle_filters(&command.filters) {
-        ParticleCommand::command().print_help()?;
-        println!();
-        return Ok(());
+const DEFAULT_SEARCH_LIMIT: usize = 20;
+
+fn run_find(command: &FindCommand, offline: bool) -> CliResult<()> {
+    let query = command.query.as_deref();
+    if let (true, Some(query)) = (command.text, query) {
+        return run_text(query, &command.output, command.show_full_text, offline);
+    }
+    if query.is_none() && !has_particle_filters(&command.filters) {
+        return print_help(Some("find"));
     }
 
     let db = open_pdg(offline)?;
-    let mut particles: Vec<_> = if let Some(mcid) = command.filters.mcid {
+    let mut particles = if let Some(mcid) = command.filters.mcid {
         db.mcid(mcid)?.into_iter().collect()
     } else {
         let filters = build_query(&command.filters)?;
-        if let Some(query) = command.query.as_deref() {
+        if let Some(query) = query {
             db.find_particles(query, filters)?
                 .into_iter()
                 .map(|hit| hit.particle)
@@ -501,15 +496,22 @@ fn run_particle(command: &ParticleCommand, offline: bool) -> CliResult<()> {
         }
     };
 
-    particles = apply_particle_limit(particles, command.query.is_some(), &command.output);
+    let default_limit = query.is_some().then_some(DEFAULT_SEARCH_LIMIT);
+    apply_search_limit(&mut particles, &command.output, default_limit);
     output_particles(&particles, &command.output)
 }
 
-fn run_text(command: TextCommand, offline: bool) -> CliResult<()> {
+fn run_text(
+    query: &str,
+    output: &SearchOutput,
+    show_full_text: bool,
+    offline: bool,
+) -> CliResult<()> {
     let db = open_pdg(offline)?;
-    let results = apply_limit(db.search_text(command.query)?, command.limit, command.all);
-    match command.format {
-        OutputFormat::Pretty => print_text_results(&db, &results, command.show_full_text),
+    let mut results = db.search_text(query)?;
+    apply_search_limit(&mut results, output, Some(DEFAULT_SEARCH_LIMIT));
+    match output.format {
+        OutputFormat::Pretty => print_text_results(&db, &results, show_full_text),
         OutputFormat::Json => {
             println!(
                 "{}",
@@ -539,7 +541,7 @@ fn run_show(pdgid: &str, output: ShowOutput, offline: bool) -> CliResult<()> {
     }
 }
 
-fn output_particles(particles: &[PdgParticle<'_>], output: &ParticleOutput) -> CliResult<()> {
+fn output_particles(particles: &[PdgParticle<'_>], output: &SearchOutput) -> CliResult<()> {
     match output.format {
         OutputFormat::Pretty => print_particles(particles),
         OutputFormat::Json => {
@@ -921,23 +923,9 @@ fn build_query(filters: &ParticleFilters) -> CliResult<ParticleSearchQuery> {
     Ok(search.decay_state_expansion(filters.decay_expansion.into()))
 }
 
-fn apply_limit<T>(items: Vec<T>, limit: usize, all: bool) -> Vec<T> {
-    if all {
-        items
-    } else {
-        items.into_iter().take(limit).collect()
-    }
-}
-
-fn apply_particle_limit<T>(items: Vec<T>, has_query: bool, output: &ParticleOutput) -> Vec<T> {
-    if output.all {
-        return items;
-    }
-
-    match output.limit {
-        Some(limit) => items.into_iter().take(limit).collect(),
-        None if has_query => items.into_iter().take(20).collect(),
-        None => items,
+fn apply_search_limit<T>(items: &mut Vec<T>, output: &SearchOutput, default: Option<usize>) {
+    if let (false, Some(limit)) = (output.all, output.limit.or(default)) {
+        items.truncate(limit);
     }
 }
 

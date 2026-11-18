@@ -18,16 +18,18 @@ cargo install pdg-rs
 ### CLI
 This crate provides a `pdg` binary for searching the PDG database. The first command that needs the default database downloads and verifies it in your OS-specific cache directory:
 ```bash
+pdg find 'K_S^0' --limit 5
+pdg find 'X(3872)'
+pdg find prtoon
+pdg find --class lepton --limit 5
+pdg find --decays-to 'K(S)0,K(S)0' --charge 0
+pdg find --text 'form factors'
 pdg show S008245
 pdg show M036 --summary
-pdg search particles 'K_S^0' --limit 5
-pdg search particles 'X(3872)'
-pdg search particles prtoon
-pdg search text "form factors"
-pdg search particles --class lepton --limit 5
-pdg search particles --decays-to K\(S\)0,K\(S\)0 --charge 0
 ```
-`pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Monte Carlo particle IDs are exposed as `mcid` in the Rust API and can be used as a particle search filter with `pdg search particles --mcid 211`.
+`pdg find` searches particles by default. Use `--text` to search PDG descriptions, text, and footnotes, and add `--show-full-text` to expand the snippets.
+
+`pdg show` accepts any PDG database string ID, including particle IDs like `S008`, data IDs like `S008M`, and text/section IDs like `S008245`. Use `pdg find --mcid 211` to look up a particle by Monte Carlo ID.
 
 Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
