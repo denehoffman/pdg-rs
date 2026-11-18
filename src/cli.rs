@@ -2,7 +2,7 @@
 
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use pdg_rs::{
-    DataEntry, DataType, DecayChannelMatch, ParticleFilterHit, ParticleProperty, Pdg,
+    DataEntry, DataType, OwnedDecayChannelMatch, ParticleFilterHit, ParticleSummary,
     PdgDatabaseInfo, PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle,
     PdgReference, PdgResult, PdgText, TextSearchCorrection, TextSearchParent, TextSearchResult,
     TextSearchSource,
@@ -13,18 +13,8 @@ use crate::{CliError, CliResult};
 
 #[derive(Serialize)]
 pub(crate) struct ParticleDto {
-    pdgid: String,
-    name: String,
-    description: String,
-    particle_type: String,
-    particle_class: String,
-    mcid: Option<isize>,
-    charge: String,
-    isospin: Option<String>,
-    g_parity: Option<String>,
-    spin: Option<String>,
-    parity: Option<String>,
-    c_parity: Option<String>,
+    #[serde(flatten)]
+    particle: ParticleSummary,
     mass: Option<DataEntryDto>,
     lifetime: Option<DataEntryDto>,
     width: Option<DataEntryDto>,
@@ -34,7 +24,7 @@ pub(crate) struct ParticleDto {
     texts: Option<Vec<TextDto>>,
     footnotes: Option<Vec<FootnoteDto>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    matching_decays: Vec<DecayChannelMatchDto>,
+    matching_decays: Vec<OwnedDecayChannelMatch>,
 }
 
 impl TryFrom<&PdgParticle<'_>> for ParticleDto {
@@ -42,18 +32,7 @@ impl TryFrom<&PdgParticle<'_>> for ParticleDto {
 
     fn try_from(particle: &PdgParticle<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
-            pdgid: particle.pdgid.clone(),
-            name: particle.name.clone(),
-            description: particle.description.clone(),
-            particle_type: particle.particle_type.to_string(),
-            particle_class: particle.particle_class.to_string(),
-            mcid: particle.mcid,
-            charge: particle.charge.to_string(),
-            isospin: particle.quantum_i.as_ref().map(ToString::to_string),
-            g_parity: particle.quantum_g.as_ref().map(ToString::to_string),
-            spin: particle.quantum_j.as_ref().map(ToString::to_string),
-            parity: particle.quantum_p.as_ref().map(ToString::to_string),
-            c_parity: particle.quantum_c.as_ref().map(ToString::to_string),
+            particle: ParticleSummary::from(particle),
             mass: particle
                 .mass()?
                 .as_ref()
@@ -87,48 +66,10 @@ impl TryFrom<&ParticleFilterHit<'_>> for ParticleDto {
         particle.matching_decays = hit
             .matching_decays
             .iter()
-            .map(DecayChannelMatchDto::from)
+            .map(OwnedDecayChannelMatch::from)
             .collect();
         Ok(particle)
     }
-}
-
-#[derive(Serialize)]
-struct DecayChannelMatchDto {
-    pdgid: String,
-    description: String,
-    data_type: String,
-    products: Vec<DecayProductDto>,
-    matched_initial_states: bool,
-    matched_final_states: bool,
-}
-
-impl From<&DecayChannelMatch<'_>> for DecayChannelMatchDto {
-    fn from(channel: &DecayChannelMatch<'_>) -> Self {
-        Self {
-            pdgid: channel.pdgid.clone(),
-            description: channel.description.clone(),
-            data_type: channel.data_type.to_code().to_owned(),
-            products: channel
-                .products
-                .iter()
-                .map(|product| DecayProductDto {
-                    name: product.name.clone(),
-                    is_outgoing: product.is_outgoing,
-                    multiplier: product.multiplier,
-                })
-                .collect(),
-            matched_initial_states: channel.matched_initial_states,
-            matched_final_states: channel.matched_final_states,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct DecayProductDto {
-    name: String,
-    is_outgoing: bool,
-    multiplier: i64,
 }
 
 #[derive(Serialize)]
@@ -456,23 +397,6 @@ pub(crate) fn table() -> Table {
     table
 }
 
-pub(crate) fn headline_property_rows<'pdg>(
-    db: &'pdg Pdg,
-    particle: &PdgParticle<'pdg>,
-) -> PdgResult<Vec<[String; 4]>> {
-    Ok(headline_properties(db, particle)?
-        .into_iter()
-        .map(|property| {
-            [
-                property.data_type.to_string(),
-                property.value.to_string(),
-                property.value.pdgid.clone(),
-                property.source.to_string(),
-            ]
-        })
-        .collect())
-}
-
 pub(crate) fn particle_table<'a, 'pdg: 'a>(
     particles: impl IntoIterator<Item = &'a PdgParticle<'pdg>>,
     full: bool,
@@ -516,54 +440,6 @@ pub(crate) fn particle_table<'a, 'pdg: 'a>(
         }
     }
     Ok(table)
-}
-
-fn headline_properties<'pdg>(
-    db: &'pdg Pdg,
-    particle: &PdgParticle<'pdg>,
-) -> PdgResult<Vec<ParticleProperty<'pdg>>> {
-    let mut rows = Vec::new();
-
-    for data_type in [DataType::Mass, DataType::Lifetime, DataType::FullWidth] {
-        if let Some(property) = particle.property(data_type)? {
-            rows.push(property);
-        }
-    }
-
-    for section in db.children_for_pdgid(&particle.pdgid)? {
-        if !matches!(section.data_type, DataType::Section) {
-            continue;
-        }
-        for child in db.children_for_pdgid(&section.pdgid)? {
-            if !child.data_type.is_particle_property() {
-                continue;
-            }
-            if matches!(
-                child.data_type,
-                DataType::Mass | DataType::Lifetime | DataType::FullWidth
-            ) {
-                continue;
-            }
-            if rows
-                .iter()
-                .any(|property| property.data_type == child.data_type)
-            {
-                continue;
-            }
-            let data = db.data_for(&child.pdgid)?;
-            if let Some(value) = data.into_iter().next() {
-                rows.push(ParticleProperty {
-                    data_type: child.data_type,
-                    value,
-                    source: pdg_rs::PropertySource::Section {
-                        section_pdgid: section.pdgid.clone(),
-                    },
-                });
-            }
-        }
-    }
-
-    Ok(rows)
 }
 
 fn property_summary(particle: &PdgParticle<'_>) -> PdgResult<[String; 3]> {

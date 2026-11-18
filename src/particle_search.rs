@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use crate::{
-    DecayChannelMatch, ParticleFilterHit, ParticleSearchQuery, Pdg, PdgParticle, PdgResult,
+    DecayChannelMatch, OwnedDecayChannelMatch, ParticleFilterHit, ParticleSearchQuery,
+    ParticleSummary, Pdg, PdgParticle, PdgResult,
 };
 
 /// How a particle's name or alias matched a ranked search query.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ParticleMatchKind {
     /// The normalized query equals the particle's normalized canonical name.
@@ -31,6 +33,36 @@ pub struct ParticleSearchHit<'pdg> {
     pub matched_name: String,
     /// Matching PDG channels, empty for a search without decay filters.
     pub matching_decays: Vec<DecayChannelMatch<'pdg>>,
+}
+
+impl ParticleSearchHit<'_> {
+    /// Detaches this hit from the database so it can be stored or serialized.
+    #[must_use]
+    pub fn into_owned(self) -> OwnedParticleSearchHit {
+        OwnedParticleSearchHit {
+            particle: ParticleSummary::from(&self.particle),
+            kind: self.kind,
+            matched_name: self.matched_name,
+            matching_decays: self
+                .matching_decays
+                .iter()
+                .map(OwnedDecayChannelMatch::from)
+                .collect(),
+        }
+    }
+}
+
+/// A ranked particle search hit that can outlive the database connection.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct OwnedParticleSearchHit {
+    /// Particle identity and quantum numbers.
+    pub particle: ParticleSummary,
+    /// The reason the name matched.
+    pub kind: ParticleMatchKind,
+    /// The original spelling of the name or alias that matched.
+    pub matched_name: String,
+    /// Matching PDG channels, empty for a search without decay filters.
+    pub matching_decays: Vec<OwnedDecayChannelMatch>,
 }
 
 impl Pdg {

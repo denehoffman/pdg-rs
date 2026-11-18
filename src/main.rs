@@ -18,16 +18,16 @@ use comfy_table::{ColumnConstraint, ContentArrangement, Width};
 use owo_colors::OwoColorize;
 use pdg_rs::{
     AngularMomentum, Charge, DataEntry, DecayStateExpansion, Isospin, Lookup, LookupSelector,
-    Parity, ParticleClass, ParticleFilterHit, ParticleSearchQuery, ParticleType, Pdg, PdgError,
-    PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgText,
-    TextSearchResult, TextSearchSource,
+    Parity, ParticleClass, ParticleDetailSelection, ParticleFilterHit, ParticleSearchQuery,
+    ParticleType, Pdg, PdgError, PdgFootnote, PdgIdEntry, PdgMeasurement, PdgMeasurementValue,
+    PdgParticle, PdgText, TextSearchResult, TextSearchSource,
 };
 use thiserror::Error;
 
 pub(crate) mod cli;
 use cli::{
     DataEntryDto, FootnoteDto, MeasurementDto, ParticleDto, PdgIdEntryDto, ShowDto, TextDto,
-    TextSearchDto, headline_property_rows, particle_table, table,
+    TextSearchDto, particle_table, table,
 };
 
 #[derive(Debug, Error)]
@@ -789,7 +789,7 @@ fn print_show(
         println!("{}", heading.cyan());
         println!("{}", particle_table(particles, false)?);
         // Property and branching records are keyed by the common PDG ID.
-        print_headline_properties(db, particle)?;
+        print_headline_properties(particle)?;
         if !output.summary {
             print_related_particles(particles)?;
             print_branching_fractions(particle)?;
@@ -953,22 +953,22 @@ fn collect_detail_pdgids(
     Ok(ordered)
 }
 
-fn print_headline_properties(db: &Pdg, particle: &PdgParticle<'_>) -> CliResult<()> {
-    let rows = headline_property_rows(db, particle)?;
+fn print_headline_properties(particle: &PdgParticle<'_>) -> CliResult<()> {
+    let details = particle.details(ParticleDetailSelection::Overview)?;
 
-    if rows.is_empty() {
+    if details.properties.is_empty() {
         return Ok(());
     }
 
     println!("{}", "Properties".cyan());
     let mut table = table();
     table.set_header(["Property", "Value", "Source PDG ID", "Source"]);
-    for row in rows {
+    for property in details.properties {
         table.add_row([
-            row[0].clone(),
-            row[1].to_value_string(),
-            row[2].to_pdgid_string(),
-            row[3].clone(),
+            property.data_type.to_string(),
+            property.value.display.to_value_string(),
+            property.value.pdgid.to_pdgid_string(),
+            property.source.to_string(),
         ]);
     }
     println!("{table}");

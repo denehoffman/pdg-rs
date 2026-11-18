@@ -90,6 +90,28 @@ fn main() -> PdgResult<()> {
 }
 ```
 
+Call `into_owned()` on a ranked or filter search hit to keep its identity, match information, and decay channels after closing the database. For details on a particle, choose which properties to load. The returned record can also outlive the database and serialize with Serde.
+
+```rust,no_run
+use pdg_rs::{DataType, Lookup, LookupSelector, ParticleDetailSelection, Pdg, PdgResult};
+
+fn main() -> PdgResult<()> {
+    let pdg = Pdg::open_cached()?;
+    if let Lookup::Found { particles, .. } = pdg.lookup(LookupSelector::Mcid(211))? {
+        for particle in particles {
+            let details =
+                particle.details(ParticleDetailSelection::Properties(&[DataType::Mass]))?;
+            if let Some(mass) = details.property(DataType::Mass) {
+                println!("{} from {}", mass.value.display, mass.value.pdgid);
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+Use `ParticleDetailSelection::Measurements(&[DataType::Mass])` to also load the measurements and references for that property. `ParticleDetailSelection::Overview` loads the headline properties shown by `pdg show`.
+
 ### Get information about a specific particle:
 ```rust,no_run
 use pdg_rs::{Pdg, PdgResult};

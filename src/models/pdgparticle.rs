@@ -465,7 +465,8 @@ pub struct ParticleProperty<'pdg> {
 }
 
 /// Source of a [`ParticleProperty`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PropertySource {
     /// The property is stored directly under the particle identifier.
     Direct,
@@ -578,7 +579,7 @@ impl<'pdg> PdgParticle<'pdg> {
         Ok(None)
     }
 
-    fn section_property(
+    pub(crate) fn section_property(
         &self,
         section: &crate::PdgIdEntry,
         child: &crate::PdgIdEntry,

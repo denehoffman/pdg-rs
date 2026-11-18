@@ -130,7 +130,7 @@ impl TryFrom<&Row<'_>> for PdgText {
 }
 
 /// Footnote attached to a PDG identifier or measurement.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgFootnote {
     /// PDG identifier for entry-level footnotes.
     pub pdgid: Option<PdgId>,
