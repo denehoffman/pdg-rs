@@ -22,11 +22,96 @@ fn help_mentions_only_canonical_subcommands() {
         .stdout(contains("show"))
         .stdout(contains("db"))
         .stdout(contains("tui"))
+        .stdout(contains("completions"))
         .stdout(contains("pdg find --text 'form factors'"))
         .stdout(contains("\n  search ").not())
         .stdout(contains("  particle").not())
         .stdout(contains("  pdgid").not())
         .stdout(contains("  text").not());
+}
+
+#[test]
+fn shell_completion_scripts_are_available_without_a_database() {
+    let cache = tempfile::tempdir().unwrap();
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        pdg_command()
+            .env_remove("PDG_RS_DB_PATH")
+            .env("PDG_RS_CACHE_DIR", cache.path())
+            .args(["--offline", "completions", shell])
+            .assert()
+            .success()
+            .stdout(contains("pdg"))
+            .stdout(contains("completions"))
+            .stderr("");
+    }
+    pdg_command()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(contains("--db-path"))
+        .stdout(contains("gauge-boson"))
+        .stdout(contains("self-conjugate"))
+        .stdout(contains("0-or-1").not());
+}
+
+#[test]
+fn find_includes_the_photon_in_both_integer_isospin_searches() {
+    for value in ["0", "1"] {
+        pdg_command()
+            .args([
+                "find",
+                "--mcid",
+                "22",
+                "--isospin",
+                value,
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success()
+            .stdout(contains("\"name\": \"gamma\""))
+            .stdout(contains("\"isospin\": \"0 or 1\""));
+    }
+    pdg_command()
+        .args([
+            "find",
+            "--mcid",
+            "22",
+            "--isospin",
+            "1/2",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout("[]\n");
+    pdg_command()
+        .args(["find", "--isospin", "0-or-1"])
+        .assert()
+        .code(2)
+        .stderr(contains("expected 0, 1/2, 1, 3/2, unknown, or missing"));
+}
+
+#[test]
+fn completion_metadata_keeps_filter_aliases_and_negative_parity() {
+    pdg_command()
+        .args([
+            "find",
+            "--class",
+            "gauge_higgs_boson",
+            "--type",
+            "self",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Self-Conjugate"));
+    pdg_command()
+        .args(["find", "pi+", "--parity", "-", "--limit", "1"])
+        .assert()
+        .success()
+        .stdout(contains("S008"));
 }
 
 #[test]

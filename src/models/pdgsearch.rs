@@ -127,6 +127,7 @@ impl ParticleSearchQuery {
 
     /// Filters particles by isospin.
     ///
+    /// Both [`Isospin::I0`] and [`Isospin::I2`] match the photon's ambiguous isospin.
     /// Passing `None` requires the isospin value to be missing.
     #[must_use]
     pub fn isospin(mut self, isospin: impl Into<Option<Isospin>>) -> Self {
