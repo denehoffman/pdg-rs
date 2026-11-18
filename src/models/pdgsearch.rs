@@ -79,11 +79,7 @@ impl From<&DecayChannelMatch<'_>> for OwnedDecayChannelMatch {
             products: channel
                 .products
                 .iter()
-                .map(|product| DecayProductSummary {
-                    name: product.name.clone(),
-                    is_outgoing: product.is_outgoing,
-                    multiplier: product.multiplier,
-                })
+                .map(DecayProductSummary::from)
                 .collect(),
             matched_initial_states: channel.matched_initial_states,
             matched_final_states: channel.matched_final_states,
@@ -100,6 +96,16 @@ pub struct DecayProductSummary {
     pub is_outgoing: bool,
     /// Number of occurrences represented by this listing row.
     pub multiplier: i64,
+}
+
+impl From<&DecayProduct<'_>> for DecayProductSummary {
+    fn from(product: &DecayProduct<'_>) -> Self {
+        Self {
+            name: product.name.clone(),
+            is_outgoing: product.is_outgoing,
+            multiplier: product.multiplier,
+        }
+    }
 }
 
 /// Builder for particle searches run by [`crate::Pdg::search_particles`] and

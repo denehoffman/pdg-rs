@@ -25,9 +25,9 @@ pdg find prtoon
 pdg find --class lepton --limit 5
 pdg find --decays-to 'KS,KS' --charge 0
 pdg find --text 'form factors'
-pdg show 'pi+' --summary
-pdg show --mcid -211
-pdg show M009 --summary
+pdg show 'pi+'
+pdg show --mcid -211 --view mass
+pdg show M009 --view decays
 pdg show S008245
 ```
 `pdg find` searches particles by default. Use `--text` to search PDG descriptions, text, and footnotes, and add `--show-full-text` to expand the snippets.
@@ -37,6 +37,21 @@ Use `pdg find --text 'form fact*'` to match a partial term. When a whole-word qu
 The first text search builds a temporary index for that database connection. `pdg find --text` returns 20 ranked hits by default. Use `--limit` to request a different count or `--all` for every match. Rust callers can use `Pdg::search_text_with_limit`.
 
 `pdg show` accepts a particle name or exact alias and any PDG database string ID, including data IDs like `S008M` and section IDs like `S008245`. Pass `--mcid` for a signed Monte Carlo ID. A shared PDG ID such as `M009` displays all particle variants. JSON reports them in `variants` with `particle` set to `null`. Ambiguous names and close matches are listed on stderr. In Rust, `Pdg::lookup` takes a `LookupSelector` and returns a `Lookup` outcome.
+
+Use `pdg show TARGET --view VIEW` to select details in either terminal or JSON output.
+
+| View | Shows |
+| --- | --- |
+| `overview` (default) | Identity, headline properties with their PDG sources, direct data, and text for non-particle entries |
+| `mass` | Mass values and their PDG sources |
+| `decays` | Branching fractions and ratios, or direct data for a channel or ratio ID |
+| `measurements` | Measurements for the entry and its headline properties or immediate section entries |
+| `references` | Unique publications for the same scope as the measurements view |
+| `full` | Text, data, decay listings, direct measurements, and linked entry IDs |
+
+`--related-details` selects the full view and expands descendant and linked entries in both formats. Rust callers can load the same sections with `Pdg::entry_details` and an `EntryDetailView`.
+
+For scripts, replace `--summary` with the default invocation or `--view overview`. Use `--view full` for the previous expanded default. JSON includes a top-level `view` and uses top-level `properties` for mass, lifetime, width, and other selected properties. Empty and unselected sections are omitted. Expanded linked entries appear in `related_details`. The CLI exits with 0 on success, 1 for lookup or runtime errors, and 2 for argument parsing errors. Redirected output contains no ANSI styling.
 
 Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime filters require an overlapping property interval by default. Use `--include-unknown-properties` to also include particles without a comparable value for a requested property. `--decay-contains` counts repeated products within one decay mode. For example, `--decay-contains 'pi+,pi+'` requires two `pi+` products in the same mode.
 

@@ -3,7 +3,7 @@ use rusqlite::Row;
 use crate::{DataType, PdgId};
 
 /// Metadata row for a PDG identifier.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgIdEntry {
     /// Internal row ID from the bundled database.
     pub id: isize,
@@ -104,7 +104,7 @@ pub struct TextSearchResult {
 }
 
 /// Free-form text block attached to a PDG identifier.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct PdgText {
     /// PDG identifier that owns this text block.
     pub pdgid: PdgId,
