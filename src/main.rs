@@ -378,7 +378,7 @@ struct ParticleFilters {
     /// Include particles with no comparable value for a requested property range.
     #[arg(long)]
     include_unknown_properties: bool,
-    /// Filter particles with an exact decay to comma-separated final states.
+    /// Filter particles with an exact decay to comma-separated final states, such as KS,KS.
     #[arg(long, value_delimiter = ',')]
     decays_to: Vec<String>,
     /// Filter particles with a decay containing comma-separated final states.
@@ -387,7 +387,7 @@ struct ParticleFilters {
     /// Filter particles which can be produced from comma-separated initial states.
     #[arg(long, value_delimiter = ',')]
     decays_from: Vec<String>,
-    /// Control whether decay state names are expanded through particle families.
+    /// Choose alias and PDG family matching or exact recorded decay-product spellings.
     #[arg(long, value_enum, default_value_t = DecayExpansionArg::Inclusive)]
     decay_expansion: DecayExpansionArg,
 }
@@ -436,7 +436,9 @@ enum OutputFormat {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum DecayExpansionArg {
+    /// Resolve exact aliases and include related PDG decay states.
     Inclusive,
+    /// Match the product spellings recorded in the database.
     Literal,
 }
 
