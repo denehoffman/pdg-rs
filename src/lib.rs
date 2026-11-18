@@ -164,9 +164,6 @@ impl Pdg {
     /// the default database is loaded from the local cache, downloading and
     /// verifying it first when needed.
     ///
-    /// This also initializes the temporary full-text search index used by
-    /// [`Pdg::search_text`].
-    ///
     /// # Errors
     ///
     /// Returns an error if the configured database cannot be opened, the cached
@@ -220,13 +217,11 @@ impl Pdg {
             PdgError::SqliteError(source) => schema_error(source),
             other => other,
         })?;
-        let pdg = Self {
+        Ok(Self {
             conn,
             info,
             edition_override: None,
-        };
-        pdg.initialize_text_search()?;
-        Ok(pdg)
+        })
     }
 
     /// Returns the edition selected for numeric data, property filters, and branching values.
@@ -313,7 +308,19 @@ impl Pdg {
     }
 
     fn initialize_text_search(&self) -> PdgResult<()> {
-        self.conn.execute_batch(
+        // Check SQLite's schema so a caller rollback cannot leave a stale readiness flag.
+        let initialized: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name = 'pdg_text_search')",
+            [],
+            |row| row.get(0),
+        )?;
+        if initialized {
+            return Ok(());
+        }
+
+        // The savepoint makes creation and population atomic, including inside a caller transaction.
+        self.conn.execute_batch("SAVEPOINT pdg_rs_text_index")?;
+        let result = self.conn.execute_batch(
             "CREATE VIRTUAL TABLE temp.pdg_text_search USING fts5(
                 body,
                 source UNINDEXED,
@@ -322,19 +329,27 @@ impl Pdg {
                 sort UNINDEXED,
                 tokenize = 'unicode61'
             );
-            INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
+            INSERT INTO temp.pdg_text_search(body, source, pdgid, text_type, sort)
                 SELECT description, 'description', pdgid, NULL, sort
-                FROM pdgid
+                FROM main.pdgid
                 WHERE description != '';
-            INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
+            INSERT INTO temp.pdg_text_search(body, source, pdgid, text_type, sort)
                 SELECT text, 'text', pdgid, type, sort
-                FROM pdgtext
+                FROM main.pdgtext
                 WHERE text IS NOT NULL AND text != '';
-            INSERT INTO pdg_text_search(body, source, pdgid, text_type, sort)
+            INSERT INTO temp.pdg_text_search(body, source, pdgid, text_type, sort)
                 SELECT text, 'footnote', pdgid, NULL, footnote_index
-                FROM pdgfootnote
-                WHERE text IS NOT NULL AND text != '';",
-        )?;
+                FROM main.pdgfootnote
+                WHERE text IS NOT NULL AND text != '';
+            RELEASE pdg_rs_text_index;",
+        );
+        if result.is_err() {
+            // SQLite may already have rolled back after a fatal error. Preserve the original error.
+            let _ = self
+                .conn
+                .execute_batch("ROLLBACK TO pdg_rs_text_index; RELEASE pdg_rs_text_index;");
+        }
+        result?;
         Ok(())
     }
 
@@ -404,7 +419,7 @@ impl Pdg {
     /// Searches descriptions, text blocks, and footnotes with `SQLite` FTS5.
     ///
     /// Non-alphanumeric separators are normalized into individual quoted search
-    /// terms before querying the index.
+    /// terms before querying the index. The temporary index is built on demand.
     ///
     /// # Examples
     ///
@@ -424,11 +439,31 @@ impl Pdg {
     ///
     /// # Errors
     ///
-    /// Returns a database error if the search query cannot be executed.
+    /// Returns a database error if the index cannot be initialized or the search fails.
     pub fn search_text(&self, query: impl Into<String>) -> PdgResult<Vec<TextSearchResult>> {
+        self.search_text_with_limit(query, None)
+    }
+
+    /// Searches the same text sources as [`Pdg::search_text`] with a result limit.
+    ///
+    /// `None` returns all hits. A limit of zero returns an empty list. Any positive
+    /// limit is applied after ranking, before the rows are read into Rust.
+    ///
+    /// # Errors
+    /// Returns a database error if the index cannot be initialized or the search fails.
+    pub fn search_text_with_limit(
+        &self,
+        query: impl Into<String>,
+        limit: Option<usize>,
+    ) -> PdgResult<Vec<TextSearchResult>> {
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
         let Some(query) = fts_query(&query.into()) else {
             return Ok(Vec::new());
         };
+        self.initialize_text_search()?;
+        let limit = limit.map_or(-1, |limit| i64::try_from(limit).unwrap_or(i64::MAX));
 
         let mut stmt = self.conn.prepare(
             "SELECT
@@ -438,13 +473,14 @@ impl Pdg {
                 sort,
                 body,
                 snippet(pdg_text_search, 0, '[', ']', '...', 24),
-                bm25(pdg_text_search)
-            FROM pdg_text_search
+                bm25(pdg_text_search) AS score
+            FROM temp.pdg_text_search
             WHERE pdg_text_search MATCH ?1
-            ORDER BY bm25(pdg_text_search), source, sort",
+            ORDER BY score, source, sort, rowid
+            LIMIT ?2",
         )?;
         Ok(stmt
-            .query_map([&query], |row| {
+            .query_map(rusqlite::params![query, limit], |row| {
                 let pdgid = row.get::<_, PdgId>(0)?;
                 let source = row.get::<_, String>(1)?;
                 let text_type = row.get::<_, Option<String>>(2)?;
@@ -1332,10 +1368,33 @@ mod tests {
     }
 
     #[test]
-    fn database_opens_read_only_and_keeps_temporary_text_search() {
+    fn text_index_builds_on_demand_and_rebuilds_after_rollback() {
         let db = test_pdg();
         assert!(db.db().is_readonly("main").unwrap());
+        let index_exists = || {
+            db.db().query_row(
+                "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name = 'pdg_text_search')",
+                [],
+                |row| row.get::<_, bool>(0),
+            ).unwrap()
+        };
+        assert!(db.particle("pi+").unwrap().is_some());
+        assert!(db.search_text("").unwrap().is_empty());
+        assert!(
+            db.search_text_with_limit("form factors", Some(0))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!index_exists());
+
+        let transaction = db.db().unchecked_transaction().unwrap();
         assert!(!db.search_text("form factors").unwrap().is_empty());
+        assert!(index_exists());
+        transaction.rollback().unwrap();
+
+        assert!(!index_exists());
+        assert!(!db.search_text("form factors").unwrap().is_empty());
+        assert!(index_exists());
     }
 
     #[test]
@@ -1736,6 +1795,20 @@ mod tests {
                 .windows(2)
                 .all(|window| window[0].score <= window[1].score)
         );
+    }
+
+    #[test]
+    fn text_search_limit_returns_the_top_ranked_hits() {
+        let db = test_pdg();
+        let all = db.search_text("decay").unwrap();
+        let top = db.search_text_with_limit("decay", Some(5)).unwrap();
+        assert_eq!(top.len(), 5);
+        for (limited, unlimited) in top.iter().zip(&all) {
+            assert_eq!(limited.pdgid, unlimited.pdgid);
+            assert_eq!(limited.source, unlimited.source);
+            assert_eq!(limited.snippet, unlimited.snippet);
+            assert_eq!(limited.score.to_bits(), unlimited.score.to_bits());
+        }
     }
 
     #[test]

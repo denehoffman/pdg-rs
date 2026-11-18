@@ -32,6 +32,8 @@ pdg show S008245
 ```
 `pdg find` searches particles by default. Use `--text` to search PDG descriptions, text, and footnotes, and add `--show-full-text` to expand the snippets.
 
+The first text search builds a temporary index for that database connection. `pdg find --text` returns 20 ranked hits by default. Use `--limit` to request a different count or `--all` for every match. Rust callers can use `Pdg::search_text_with_limit`.
+
 `pdg show` accepts a particle name or exact alias and any PDG database string ID, including data IDs like `S008M` and section IDs like `S008245`. Pass `--mcid` for a signed Monte Carlo ID. A shared PDG ID such as `M009` displays all particle variants. JSON reports them in `variants` with `particle` set to `null`. Ambiguous names and close matches are listed on stderr. In Rust, `Pdg::lookup` takes a `LookupSelector` and returns a `Lookup` outcome.
 
 Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime filters require an overlapping property interval by default. Use `--include-unknown-properties` to also include particles without a comparable value for a requested property. `--decay-contains` counts repeated products within one decay mode. For example, `--decay-contains 'pi+,pi+'` requires two `pi+` products in the same mode.
