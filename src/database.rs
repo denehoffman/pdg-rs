@@ -2,12 +2,12 @@ use std::{
     collections::HashMap,
     env,
     fs::{self, File},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
 use directories::ProjectDirs;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -82,7 +82,35 @@ pub fn available_editions(conn: &Connection) -> PdgResult<Vec<String>> {
         .collect::<Result<_, _>>()?)
 }
 
+pub fn open_read_only(path: &Path) -> PdgResult<Connection> {
+    let metadata = path.metadata().map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            PdgError::DatabaseFileMissing(path.to_path_buf())
+        } else {
+            PdgError::DatabaseFileAccess {
+                path: path.to_path_buf(),
+                source,
+            }
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(PdgError::DatabaseFileAccess {
+            path: path.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, "expected a SQLite file"),
+        });
+    }
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|source| {
+        PdgError::DatabaseOpen {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
 pub fn ensure_database() -> PdgResult<PathBuf> {
+    if offline() {
+        return cached_database();
+    }
     if let Some(path) = configured_database_path() {
         return Ok(path);
     }
@@ -91,9 +119,6 @@ pub fn ensure_database() -> PdgResult<PathBuf> {
     match validate_database(&path) {
         Ok(()) => Ok(path),
         Err(error) if should_download_after(&path, &error) => {
-            if offline() {
-                return Err(PdgError::OfflineDatabaseMissing(path));
-            }
             download_database(&path)?;
             validate_database(&path)?;
             Ok(path)
@@ -108,11 +133,13 @@ pub fn cached_database() -> PdgResult<PathBuf> {
     }
 
     let path = cached_database_path()?;
-    if !path.exists() {
-        return Err(PdgError::OfflineDatabaseMissing(path));
+    match validate_database(&path) {
+        Ok(()) => Ok(path),
+        Err(PdgError::Io(source)) if source.kind() == io::ErrorKind::NotFound => {
+            Err(PdgError::OfflineDatabaseMissing(path))
+        }
+        Err(error) => Err(error),
     }
-    validate_database(&path)?;
-    Ok(path)
 }
 
 pub fn cached_database_path() -> PdgResult<PathBuf> {

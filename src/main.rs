@@ -227,11 +227,28 @@ fn push_optional_line<T: ToString>(lines: &mut Vec<String>, label: &str, value: 
     after_help = "Examples:\n  pdg find 'π⁺'\n  pdg find --class lepton --limit 5\n  pdg find --text 'form factors'\n  pdg show 'pi+'"
 )]
 struct Cli {
-    /// Require an already cached database instead of downloading it.
-    #[arg(long, global = true)]
-    offline: bool,
+    #[command(flatten)]
+    database: DatabaseOptions,
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[derive(Parser)]
+struct DatabaseOptions {
+    /// Disable database downloads.
+    #[arg(long, global = true)]
+    offline: bool,
+    /// Open this local SQLite file in place of the default database.
+    #[arg(long, global = true, value_name = "FILE")]
+    db_path: Option<PathBuf>,
+}
+
+impl DatabaseOptions {
+    fn override_path(&self) -> Option<PathBuf> {
+        self.db_path
+            .clone()
+            .or_else(|| env::var_os("PDG_RS_DB_PATH").map(PathBuf::from))
+    }
 }
 
 #[derive(Subcommand)]
@@ -254,11 +271,11 @@ struct DbCommand {
 
 #[derive(Subcommand)]
 enum DbCommands {
-    /// Show whether the default database is available locally.
+    /// Show the selected database source, path, and edition.
     Status,
-    /// Download and verify the default database.
+    /// Make the selected database available locally and print its path.
     Fetch,
-    /// Print the default cache path.
+    /// Print the effective database path.
     Path,
     /// Remove the default cached database.
     Clear,
@@ -430,9 +447,9 @@ fn run() -> CliResult<()> {
     };
 
     match command {
-        Commands::Find(command) => run_find(&command, cli.offline),
-        Commands::Show(command) => run_show(&command, cli.offline),
-        Commands::Db(command) => run_db(&command),
+        Commands::Find(command) => run_find(&command, &cli.database),
+        Commands::Show(command) => run_show(&command, &cli.database),
+        Commands::Db(command) => run_db(&command, &cli.database),
         Commands::Tui => Err(CliError::InvalidArgument(
             "TUI is not implemented yet. Use `pdg find`, `pdg show`, or `pdg db`.".into(),
         )),
@@ -453,8 +470,10 @@ fn print_help(subcommand: Option<&str>) -> CliResult<()> {
     Ok(())
 }
 
-fn open_pdg(offline: bool, edition: Option<&str>) -> CliResult<Pdg> {
-    let db = if offline {
+fn open_pdg(database: &DatabaseOptions, edition: Option<&str>) -> CliResult<Pdg> {
+    let db = if let Some(path) = database.override_path() {
+        Pdg::open_path(path)?
+    } else if database.offline {
         Pdg::open_cached()?
     } else {
         Pdg::open()?
@@ -465,45 +484,69 @@ fn open_pdg(offline: bool, edition: Option<&str>) -> CliResult<Pdg> {
     })
 }
 
-fn run_db(command: &DbCommand) -> CliResult<()> {
+fn run_db(command: &DbCommand, database: &DatabaseOptions) -> CliResult<()> {
     match command.command {
         DbCommands::Status => {
-            if let Some(path) = env::var_os("PDG_RS_DB_PATH").map(PathBuf::from) {
-                return print_database_status("database override", &path);
+            if let Some(path) = database.override_path() {
+                let db = Pdg::open_path(&path)?;
+                let source = if database.db_path.is_some() {
+                    "database override (--db-path)"
+                } else {
+                    "database override"
+                };
+                return print_database_status(source, &path, &db);
             }
 
             let path = Pdg::cached_database_path()?;
-            if path.exists() {
-                print_database_status("cached database", &path)
-            } else {
-                println!("database not cached: {}", path.display());
-                Ok(())
+            match Pdg::open_cached() {
+                Ok(db) => print_database_status("cached database", &path, &db),
+                Err(PdgError::OfflineDatabaseMissing(_)) => {
+                    println!("database not cached: {}", path.display());
+                    Ok(())
+                }
+                Err(error) => Err(error.into()),
             }
         }
         DbCommands::Fetch => {
-            let path = Pdg::ensure_database()?;
+            let path = if let Some(path) = database.override_path() {
+                Pdg::open_path(&path)?;
+                path
+            } else if database.offline {
+                Pdg::open_cached()?;
+                Pdg::cached_database_path()?
+            } else {
+                Pdg::ensure_database()?
+            };
             println!("{}", path.display());
             Ok(())
         }
         DbCommands::Path => {
-            println!("{}", Pdg::cached_database_path()?.display());
+            let path = database
+                .override_path()
+                .map_or_else(Pdg::cached_database_path, Ok)?;
+            println!("{}", path.display());
             Ok(())
         }
         DbCommands::Clear => {
+            if database.db_path.is_some() {
+                return Err(CliError::InvalidArgument(
+                    "db clear operates on the default cache. Omit --db-path.".into(),
+                ));
+            }
             let path = Pdg::cached_database_path()?;
-            if path.exists() {
-                fs::remove_file(&path)?;
-                println!("removed {}", path.display());
-            } else {
-                println!("database not cached: {}", path.display());
+            match fs::remove_file(&path) {
+                Ok(()) => println!("removed {}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    println!("database not cached: {}", path.display());
+                }
+                Err(error) => return Err(error.into()),
             }
             Ok(())
         }
     }
 }
 
-fn print_database_status(source: &str, path: &Path) -> CliResult<()> {
-    let db = Pdg::open_cached()?;
+fn print_database_status(source: &str, path: &Path, db: &Pdg) -> CliResult<()> {
     let info = db.database_info();
     let editions = db.available_editions()?;
     println!("{source}: {}", path.display());
@@ -522,17 +565,17 @@ fn print_database_status(source: &str, path: &Path) -> CliResult<()> {
 
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 
-fn run_find(command: &FindCommand, offline: bool) -> CliResult<()> {
+fn run_find(command: &FindCommand, database: &DatabaseOptions) -> CliResult<()> {
     let query = command.query.as_deref();
     if let (true, Some(query)) = (command.text, query) {
-        return run_text(query, &command.output, command.show_full_text, offline);
+        return run_text(query, &command.output, command.show_full_text, database);
     }
     if query.is_none() && !has_particle_filters(&command.filters) {
         return print_help(Some("find"));
     }
 
     let filters = build_query(&command.filters)?;
-    let db = open_pdg(offline, command.edition.as_deref())?;
+    let db = open_pdg(database, command.edition.as_deref())?;
     let mut particles = if let Some(query) = query {
         db.find_particles(query, filters)?
             .into_iter()
@@ -551,9 +594,9 @@ fn run_text(
     query: &str,
     output: &SearchOutput,
     show_full_text: bool,
-    offline: bool,
+    database: &DatabaseOptions,
 ) -> CliResult<()> {
-    let db = open_pdg(offline, None)?;
+    let db = open_pdg(database, None)?;
     let mut results = db.search_text(query)?;
     apply_search_limit(&mut results, output, Some(DEFAULT_SEARCH_LIMIT));
     match output.format {
@@ -570,8 +613,8 @@ fn run_text(
     }
 }
 
-fn run_show(command: &ShowCommand, offline: bool) -> CliResult<()> {
-    let db = open_pdg(offline, command.edition.as_deref())?;
+fn run_show(command: &ShowCommand, database: &DatabaseOptions) -> CliResult<()> {
+    let db = open_pdg(database, command.edition.as_deref())?;
     let (target, lookup) = if let Some(mcid) = command.mcid {
         (
             format!("MCID {mcid}"),

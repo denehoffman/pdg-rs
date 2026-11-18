@@ -37,6 +37,33 @@ pub enum PdgError {
     /// The PDG database is not cached and network access is disabled.
     #[error("PDG database is not cached at {0:?} and downloads are disabled")]
     OfflineDatabaseMissing(PathBuf),
+    /// The specified local database file does not exist.
+    #[error("PDG database file does not exist at {0:?}")]
+    DatabaseFileMissing(PathBuf),
+    /// A local database path cannot be accessed as a regular file.
+    #[error("cannot access PDG database file at {path:?}: {source}")]
+    DatabaseFileAccess {
+        /// Path supplied for the database.
+        path: PathBuf,
+        /// Underlying file error.
+        source: std::io::Error,
+    },
+    /// The `SQLite` connection for a local file could not be opened read-only.
+    #[error("cannot open PDG database at {path:?}: {source}")]
+    DatabaseOpen {
+        /// Path supplied for the database.
+        path: PathBuf,
+        /// Underlying database error.
+        source: rusqlite::Error,
+    },
+    /// The opened file does not have the required PDG database schema.
+    #[error("invalid or unsupported PDG database schema at {path:?}: {source}")]
+    DatabaseSchema {
+        /// Path supplied for the database.
+        path: PathBuf,
+        /// The query error that identified the incompatible file.
+        source: rusqlite::Error,
+    },
     /// Downloading the PDG database failed.
     #[error("failed to download PDG database: {0}")]
     Download(String),
@@ -131,7 +158,7 @@ impl Pdg {
     const PARTICLE_JOIN: &'static str =
         "JOIN pdgid ON pdgid.pdgid = pdgparticle.pdgid AND pdgid.data_type = 'PART'";
 
-    /// Opens the default PDG `SQLite` database.
+    /// Opens the default PDG `SQLite` database read-only.
     ///
     /// If `PDG_RS_DB_PATH` is set, that exact database file is opened. Otherwise,
     /// the default database is loaded from the local cache, downloading and
@@ -149,7 +176,7 @@ impl Pdg {
         Self::open_path(database::ensure_database()?)
     }
 
-    /// Opens the default PDG `SQLite` database without downloading it.
+    /// Opens the default PDG `SQLite` database read-only without downloading it.
     ///
     /// If `PDG_RS_DB_PATH` is set, that exact database file is opened. Otherwise,
     /// this opens the verified cached copy of the default database.
@@ -163,7 +190,7 @@ impl Pdg {
         Self::open_path(database::cached_database()?)
     }
 
-    /// Opens a PDG `SQLite` database at `path`.
+    /// Opens an existing PDG `SQLite` database at `path` read-only.
     ///
     /// This is useful for applications that manage their own database file or
     /// want to use a different PDG release. Numeric queries default to the file's
@@ -173,8 +200,26 @@ impl Pdg {
     ///
     /// Returns an error if `path` cannot be opened or initialized or has no edition.
     pub fn open_path(path: impl AsRef<Path>) -> PdgResult<Self> {
-        let conn = Connection::open(path)?;
-        let info = database::read_database_info(&conn)?;
+        let path = path.as_ref();
+        let conn = database::open_read_only(path)?;
+        let schema_error = |source| PdgError::DatabaseSchema {
+            path: path.to_path_buf(),
+            source,
+        };
+        conn.execute_batch(&format!(
+            "SELECT {} FROM pdgparticle {} LIMIT 0;
+             SELECT {}, pdgid_id FROM pdgdata LIMIT 0;
+             SELECT id, pdgid, parent_pdgid, description, mode_number, data_type, flags, year_added, sort FROM pdgid LIMIT 0;
+             SELECT pdgid, text, type, sort FROM pdgtext LIMIT 0;
+             SELECT pdgid, text, footnote_index FROM pdgfootnote LIMIT 0;",
+            Self::PARTICLE_COLUMNS,
+            Self::PARTICLE_JOIN,
+            DataEntry::COLUMNS,
+        )).map_err(schema_error)?;
+        let info = database::read_database_info(&conn).map_err(|error| match error {
+            PdgError::SqliteError(source) => schema_error(source),
+            other => other,
+        })?;
         let pdg = Self {
             conn,
             info,
@@ -257,7 +302,7 @@ impl Pdg {
         database::cached_database_path()
     }
 
-    /// Returns the underlying `SQLite` connection.
+    /// Returns the underlying read-only `SQLite` connection.
     ///
     /// This is useful for advanced queries that are not covered by the typed
     /// API. Prefer the typed methods where possible because they preserve links
@@ -1284,6 +1329,13 @@ mod tests {
 
     fn test_pdg() -> Pdg {
         Pdg::open_path(TEST_DB_PATH).unwrap()
+    }
+
+    #[test]
+    fn database_opens_read_only_and_keeps_temporary_text_search() {
+        let db = test_pdg();
+        assert!(db.db().is_readonly("main").unwrap());
+        assert!(!db.search_text("form factors").unwrap().is_empty());
     }
 
     #[test]
