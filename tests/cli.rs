@@ -803,6 +803,24 @@ fn find_text_json_includes_footnote_source() {
 }
 
 #[test]
+fn find_text_all_overrides_an_explicit_limit() {
+    let args = [
+        "find",
+        "--text",
+        "form factors",
+        "--limit",
+        "0",
+        "--format",
+        "json",
+    ];
+    pdg_command().args(args).assert().success().stdout("[]\n");
+
+    let result = pdg_command().args(args).arg("--all").assert().success();
+    let hits: Vec<serde_json::Value> = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert!(hits.len() > 1);
+}
+
+#[test]
 fn tui_stub_is_reserved() {
     let mut cmd = pdg_command();
     cmd.arg("tui")

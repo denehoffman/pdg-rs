@@ -391,6 +391,16 @@ struct SearchOutput {
     all: bool,
 }
 
+impl SearchOutput {
+    fn result_limit(&self, default: Option<usize>) -> Option<usize> {
+        if self.all {
+            None
+        } else {
+            self.limit.or(default)
+        }
+    }
+}
+
 #[derive(Parser, Clone, Copy)]
 struct ShowOutput {
     /// Output format.
@@ -586,7 +596,9 @@ fn run_find(command: &FindCommand, database: &DatabaseOptions) -> CliResult<()> 
     };
 
     let default_limit = query.is_some().then_some(DEFAULT_SEARCH_LIMIT);
-    apply_search_limit(&mut particles, &command.output, default_limit);
+    if let Some(limit) = command.output.result_limit(default_limit) {
+        particles.truncate(limit);
+    }
     output_particles(&particles, &command.output)
 }
 
@@ -597,8 +609,8 @@ fn run_text(
     database: &DatabaseOptions,
 ) -> CliResult<()> {
     let db = open_pdg(database, None)?;
-    let mut results = db.search_text(query)?;
-    apply_search_limit(&mut results, output, Some(DEFAULT_SEARCH_LIMIT));
+    let results =
+        db.search_text_with_limit(query, output.result_limit(Some(DEFAULT_SEARCH_LIMIT)))?;
     match output.format {
         OutputFormat::Pretty => print_text_results(&db, &results, show_full_text),
         OutputFormat::Json => {
@@ -1089,12 +1101,6 @@ fn build_query(filters: &ParticleFilters) -> CliResult<ParticleSearchQuery> {
         search = search.decays_from(filters.decays_from.clone());
     }
     Ok(search.decay_state_expansion(filters.decay_expansion.into()))
-}
-
-fn apply_search_limit<T>(items: &mut Vec<T>, output: &SearchOutput, default: Option<usize>) {
-    if let (false, Some(limit)) = (output.all, output.limit.or(default)) {
-        items.truncate(limit);
-    }
 }
 
 const fn has_particle_filters(filters: &ParticleFilters) -> bool {
