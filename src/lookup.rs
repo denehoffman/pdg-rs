@@ -24,9 +24,9 @@ pub enum Lookup<'pdg> {
         /// The selected particle, all variants of a PDG ID, or an empty list for a non-particle entry.
         particles: Vec<PdgParticle<'pdg>>,
     },
-    /// Multiple particles matched the name, alias, or Monte Carlo ID exactly.
+    /// Multiple particles or listings matched at the best direct priority.
     Ambiguous(Vec<PdgParticle<'pdg>>),
-    /// No entry or particle matched exactly.
+    /// No entry or unambiguous particle match was found.
     Missing {
         /// Up to five partial or typo matches when looking up a name.
         suggestions: Vec<ParticleSearchHit<'pdg>>,
@@ -37,9 +37,11 @@ impl Pdg {
     /// Resolves a PDG ID, a particle name or alias, or a signed Monte Carlo ID.
     ///
     /// PDG IDs return the entry with all particle variants in name and MCID order.
-    /// Name lookup considers exact normalized names first, then exact aliases.
-    /// Multiple matches at the same priority produce [`Lookup::Ambiguous`].
-    /// Partial and typo matches are suggestions in [`Lookup::Missing`].
+    /// Name lookup prefers exact normalized names, exact aliases, and resonance
+    /// shorthand, in that order. Resonance shorthand can select several variants
+    /// under a shared PDG ID. Multiple direct matches that cannot share a listing
+    /// produce [`Lookup::Ambiguous`]. A single partial or typo match resolves;
+    /// multiple close matches are suggestions in [`Lookup::Missing`].
     ///
     /// # Examples
     /// ```no_run
@@ -68,22 +70,23 @@ impl Pdg {
             }
             LookupSelector::Name(name) => {
                 let mut hits = self.find_particles(name, ParticleSearchQuery::new())?;
-                let Some(kind @ (ParticleMatchKind::ExactName | ParticleMatchKind::ExactAlias)) =
-                    hits.first().map(|hit| hit.kind)
-                else {
-                    hits.truncate(5);
+                let Some(kind) = hits.first().map(|hit| hit.kind) else {
                     return Ok(Lookup::Missing { suggestions: hits });
                 };
+                if !kind.is_direct() && hits.len() > 1 {
+                    hits.truncate(5);
+                    return Ok(Lookup::Missing { suggestions: hits });
+                }
                 let particles = hits
                     .into_iter()
                     .take_while(|hit| hit.kind == kind)
                     .map(|hit| hit.particle)
                     .collect();
-                self.resolve_particle_candidates(particles)
+                self.resolve_particle_candidates(particles, kind == ParticleMatchKind::Resonance)
             }
             LookupSelector::Mcid(mcid) => {
                 let particles = self.search_particles(ParticleSearchQuery::new().mcid(mcid))?;
-                self.resolve_particle_candidates(particles)
+                self.resolve_particle_candidates(particles, false)
             }
         }
     }
@@ -104,12 +107,19 @@ impl Pdg {
     fn resolve_particle_candidates<'pdg>(
         &'pdg self,
         particles: Vec<PdgParticle<'pdg>>,
+        allow_shared_entry: bool,
     ) -> PdgResult<Lookup<'pdg>> {
         match particles.as_slice() {
             [] => Ok(Lookup::Missing {
                 suggestions: Vec::new(),
             }),
-            [particle] => {
+            [particle, ..]
+                if particles.len() == 1
+                    || (allow_shared_entry
+                        && particles
+                            .iter()
+                            .all(|candidate| candidate.pdgid == particle.pdgid)) =>
+            {
                 let entry = self.pdgid(&particle.pdgid)?.ok_or_else(|| {
                     PdgError::Custom(format!(
                         "missing PDG entry {} for {}",

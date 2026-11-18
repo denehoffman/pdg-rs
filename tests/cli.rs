@@ -697,12 +697,92 @@ fn show_reports_ambiguous_and_close_matches_on_stderr() {
         .stderr(contains("B205"));
 
     pdg_command()
-        .args(["show", "prtoon", "--format", "json"])
+        .args(["show", "rh", "--format", "json"])
         .assert()
         .code(1)
         .stdout("")
         .stderr(contains("Close matches"))
-        .stderr(contains("p (PDG ID S016, MCID 2212)"));
+        .stderr(contains("rho(770)"));
+
+    pdg_command()
+        .args(["show", "f2300"])
+        .assert()
+        .code(1)
+        .stderr(contains("f_2(2300)0"))
+        .stderr(contains("f_4(2300)0"));
+}
+
+#[test]
+fn show_resolves_close_matches_and_resonance_shorthand() {
+    for (query, pdgid, particle) in [
+        ("prtoon", "S016", "p"),
+        ("f0(980)", "M003", "f_0(980)0"),
+        ("f0980", "M003", "f_0(980)0"),
+        ("f980", "M003", "f_0(980)0"),
+        ("a1320+", "M012", "a_2(1320)+"),
+        ("a213200", "M012", "a_2(1320)0"),
+    ] {
+        let result = pdg_command()
+            .args(["show", query, "--format", "json"])
+            .assert()
+            .success();
+        let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert_eq!(value["entry"]["pdgid"], pdgid, "{query}");
+        assert_eq!(value["particle"]["name"], particle, "{query}");
+    }
+    for query in ["a21320", "a1320"] {
+        let result = pdg_command()
+            .args(["show", query, "--format", "json"])
+            .assert()
+            .success();
+        let value: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert_eq!(value["entry"]["pdgid"], "M012", "{query}");
+        assert!(value["particle"].is_null());
+        assert_eq!(value["variants"].as_array().unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn find_and_decay_filters_use_resonance_shorthand() {
+    pdg_command()
+        .args(["find", "a1320+", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(contains("a_2(1320)+"))
+        .stdout(contains("a_2(1320)-").not());
+    pdg_command()
+        .args(["find", "f0981", "--format", "json"])
+        .assert()
+        .success()
+        .stdout("[]\n");
+    let search = |state: &str| {
+        pdg_command()
+            .args([
+                "find",
+                "--decay-contains",
+                state,
+                "--limit",
+                "5",
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let canonical = search("f_0(980)");
+    let matches: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    assert!(!matches.as_array().unwrap().is_empty());
+    assert_eq!(search("f0980"), canonical);
+    assert_eq!(search("f980"), canonical);
+    pdg_command()
+        .args(["find", "--decay-contains", "f2300"])
+        .assert()
+        .code(1)
+        .stderr(contains("f_2(2300)0"))
+        .stderr(contains("f_4(2300)0"));
 }
 
 #[test]

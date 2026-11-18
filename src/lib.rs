@@ -129,6 +129,14 @@ pub enum PdgError {
     /// A quantum number could not be converted into the requested numeric representation.
     #[error(transparent)]
     QuantumNumberConversion(#[from] QuantumNumberConversionError),
+    /// A decay filter's shorthand or close match refers to multiple particle names.
+    #[error("decay state {name:?} matches multiple particles: {}", .candidates.join(", "))]
+    AmbiguousDecayState {
+        /// The supplied decay state.
+        name: String,
+        /// Particle names that matched the state.
+        candidates: Vec<String>,
+    },
     /// An application-specific error message.
     #[error("Custom error: {0}")]
     Custom(String),
@@ -314,10 +322,10 @@ impl Pdg {
         &self.conn
     }
 
-    /// Looks up a particle by its PDG item name.
+    /// Looks up a particle by its exact PDG item name.
     ///
-    /// Use [`Pdg::lookup`] when you already have a PDG identifier,
-    /// or [`Pdg::mcid`] when you have a Monte Carlo particle ID.
+    /// Use [`Pdg::lookup`] for alternate spellings, aliases, and PDG identifiers,
+    /// or [`Pdg::mcid`] for a Monte Carlo particle ID.
     ///
     /// # Errors
     ///
@@ -1464,6 +1472,7 @@ mod tests {
         for (selector, pdgid, name) in [
             (LookupSelector::Name("π⁺"), "S008", "pi+"),
             (LookupSelector::Name("X(3872)"), "M176", "chi_c1(3872)"),
+            (LookupSelector::Name("prtoon"), "S016", "p"),
             (LookupSelector::Mcid(-211), "S008", "pi-"),
         ] {
             let Lookup::Found { entry, particles } = db.lookup(selector).unwrap() else {
@@ -1500,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_surfaces_ambiguity_and_leaves_typos_as_suggestions() {
+    fn lookup_surfaces_ambiguity_and_keeps_multiple_close_suggestions() {
         let db = test_pdg();
         let Lookup::Ambiguous(choices) =
             db.lookup(LookupSelector::Name("P_c_cbar(4312)+")).unwrap()
@@ -1518,11 +1527,10 @@ mod tests {
         };
         assert_eq!(choices.len(), 3);
 
-        let Lookup::Missing { suggestions } = db.lookup(LookupSelector::Name("prtoon")).unwrap()
-        else {
-            panic!("a typo should not select a particle");
+        let Lookup::Missing { suggestions } = db.lookup(LookupSelector::Name("rh")).unwrap() else {
+            panic!("multiple close matches should leave suggestions");
         };
-        assert_eq!(suggestions[0].particle.name, "p");
+        assert!(suggestions.len() > 1);
     }
 
     #[test]
@@ -1698,16 +1706,25 @@ mod tests {
     }
 
     #[test]
-    fn decay_names_share_exact_particle_aliases_and_normalization() {
+    fn decay_names_share_particle_aliases_shorthand_and_close_matches() {
         let db = test_pdg();
-        let supplied = ["KS", "Kₛ⁰", "K(S)0", "proton", "π⁺", "prtoon"];
+        let supplied = [
+            "KS", "Kₛ⁰", "K(S)0", "proton", "π⁺", "prtoon", "f0980", "a1320", "a1320+",
+        ];
         let resolved = db
             .resolve_decay_names(supplied.map(str::to_owned).to_vec())
             .unwrap();
-        for (actual, expected) in resolved
-            .iter()
-            .zip(["K(S)0", "K(S)0", "K(S)0", "p", "pi+", "prtoon"])
-        {
+        for (actual, expected) in resolved.iter().zip([
+            "K(S)0",
+            "K(S)0",
+            "K(S)0",
+            "p",
+            "pi+",
+            "p",
+            "f_0(980)",
+            "a_2(1320)",
+            "a_2(1320)+",
+        ]) {
             assert_eq!(actual, &[expected]);
         }
         let literal = db

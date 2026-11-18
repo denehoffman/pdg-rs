@@ -170,7 +170,8 @@ pub enum DecayMatchMode {
 /// Controls how named decay states are expanded through the PDG item hierarchy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DecayStateExpansion {
-    /// Resolve normalized names and exact aliases, then include related PDG decay states.
+    /// Resolve names, aliases, resonance shorthand, and unique close matches,
+    /// then include related PDG decay states.
     #[default]
     Inclusive,
     /// Use the exact product spellings supplied in the query.
