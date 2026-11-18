@@ -38,7 +38,9 @@ Particle filters combine with AND, including `--mcid`. Mass, width, and lifetime
 
 Particle name search recognizes PDG aliases, common names, and notation such as `π⁺`. Exact names and aliases rank ahead of partial matches and typo corrections. In Rust, call `pdg.find_particles("X(3872)", ParticleSearchQuery::new())?` to get the same ranked results with the matched spelling and reason.
 
-Use `pdg db fetch`, `pdg db status`, `pdg db path`, and `pdg db clear` to manage the cached database. Set `PDG_RS_DB_PATH` to open a specific `SQLite` database file, `PDG_RS_CACHE_DIR` to choose a cache directory, or pass `--offline` to require an existing cached database.
+Pass `--db-path FILE` to open an existing local SQLite database read-only. The flag takes precedence over `PDG_RS_DB_PATH`. With neither override, `pdg` uses the pinned database in the cache, which you can relocate with `PDG_RS_CACHE_DIR`.
+
+`pdg db path` prints the effective database path, and `pdg db status` reports the source and release. `pdg db fetch` prepares the selected database for local use. `--offline` or `PDG_RS_OFFLINE=1` disables downloads, including for `db fetch`. `pdg db clear` removes the pinned cache file and rejects `--db-path`.
 
 Numeric data and property filters default to the opened file's edition. Run `pdg db status` to see its release and available numeric editions. Use `pdg show 'pi+' --edition 2024` or `pdg find --mass 100..150 --edition 2024` for historical values. Rust callers can use `Pdg::open()?.with_edition("2024")?`. The particle catalogue, decay listings, text, and measurements come from the opened file's release. JSON from `show` reports the selected `edition` and the release metadata in `database`.
 

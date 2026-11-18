@@ -1,15 +1,14 @@
 use assert_cmd::Command;
 use predicates::{prelude::PredicateBooleanExt, str::contains};
 
+const TEST_DB_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/pdgall-2025-v0.2.2.sqlite"
+);
+
 fn pdg_command() -> Command {
     let mut cmd = Command::cargo_bin("pdg").unwrap();
-    cmd.env(
-        "PDG_RS_DB_PATH",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/pdgall-2025-v0.2.2.sqlite"
-        ),
-    );
+    cmd.env("PDG_RS_DB_PATH", TEST_DB_PATH);
     cmd
 }
 
@@ -99,10 +98,137 @@ fn find_validates_text_options() {
 #[test]
 fn db_path_prints_cache_path() {
     let mut cmd = pdg_command();
-    cmd.args(["db", "path"])
+    cmd.env_remove("PDG_RS_DB_PATH")
+        .args(["db", "path"])
         .assert()
         .success()
         .stdout(contains("pdgall-2026.0.sqlite"));
+}
+
+#[test]
+fn db_path_prints_the_effective_override() {
+    let expected = format!("{TEST_DB_PATH}\n");
+    pdg_command()
+        .args(["db", "path"])
+        .assert()
+        .success()
+        .stdout(expected.clone());
+    pdg_command()
+        .env("PDG_RS_DB_PATH", "unused.sqlite")
+        .args(["db", "path", "--db-path", TEST_DB_PATH])
+        .assert()
+        .success()
+        .stdout(expected);
+}
+
+#[test]
+fn db_path_flag_overrides_environment_for_queries_and_status() {
+    pdg_command()
+        .env("PDG_RS_DB_PATH", "unused.sqlite")
+        .args([
+            "--offline",
+            "--db-path",
+            TEST_DB_PATH,
+            "show",
+            "pi+",
+            "--summary",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("PDG edition 2025"));
+    pdg_command()
+        .env("PDG_RS_DB_PATH", "unused.sqlite")
+        .args(["db", "status", "--db-path", TEST_DB_PATH])
+        .assert()
+        .success()
+        .stdout(contains("database override (--db-path)"))
+        .stdout(contains(TEST_DB_PATH))
+        .stdout(contains("database edition: 2025"));
+}
+
+#[test]
+fn missing_database_paths_report_an_error_without_creating_a_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.sqlite");
+    for args in [["show", "S008"], ["db", "fetch"]] {
+        pdg_command()
+            .args(args)
+            .arg("--db-path")
+            .arg(&missing)
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr(contains("PDG database file does not exist"))
+            .stderr(contains("missing.sqlite"));
+        assert!(!missing.exists());
+    }
+}
+
+#[test]
+fn db_status_identifies_an_unsupported_sqlite_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unrelated.sqlite");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TABLE unrelated (value TEXT)")
+        .unwrap();
+    drop(conn);
+    pdg_command()
+        .args(["db", "status", "--db-path"])
+        .arg(&path)
+        .assert()
+        .code(1)
+        .stderr(contains("invalid or unsupported PDG database schema"))
+        .stderr(contains("unrelated.sqlite"))
+        .stderr(contains("pdgparticle"));
+}
+
+#[test]
+fn db_fetch_honors_offline_for_missing_and_corrupt_caches() {
+    let cache = tempfile::tempdir().unwrap();
+    let cached_file = cache.path().join("pdgall-2026.0.sqlite");
+    pdg_command()
+        .env_remove("PDG_RS_DB_PATH")
+        .env("PDG_RS_CACHE_DIR", cache.path())
+        .env("PDG_RS_OFFLINE", "0")
+        .args(["db", "fetch", "--offline"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(contains("downloads are disabled"));
+    assert!(!cached_file.exists());
+
+    std::fs::write(&cached_file, b"corrupt").unwrap();
+    for (environment, flags) in [("0", &["--offline"][..]), ("1", &[][..])] {
+        pdg_command()
+            .env_remove("PDG_RS_DB_PATH")
+            .env("PDG_RS_CACHE_DIR", cache.path())
+            .env("PDG_RS_OFFLINE", environment)
+            .args(["db", "fetch"])
+            .args(flags)
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr(contains("PDG database size mismatch"));
+        assert_eq!(std::fs::read(&cached_file).unwrap(), b"corrupt");
+    }
+}
+
+#[test]
+fn db_clear_rejects_an_explicit_database_path() {
+    let cache = tempfile::tempdir().unwrap();
+    let local = cache.path().join("local.sqlite");
+    let cached = cache.path().join("pdgall-2026.0.sqlite");
+    std::fs::write(&local, b"local").unwrap();
+    std::fs::write(&cached, b"cache").unwrap();
+    pdg_command()
+        .env("PDG_RS_CACHE_DIR", cache.path())
+        .args(["db", "clear", "--db-path"])
+        .arg(&local)
+        .assert()
+        .code(1)
+        .stderr(contains("db clear operates on the default cache"));
+    assert!(local.exists());
+    assert!(cached.exists());
 }
 
 #[test]
