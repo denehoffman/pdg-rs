@@ -249,7 +249,7 @@ struct App {
     hits: Vec<Hit>,
     results: ListState,
     detail: Option<Detail>,
-    previous_detail: Option<Detail>,
+    detail_history: Vec<Detail>,
     filters: Option<AppliedFilters>,
     filter_editor: Option<FilterEditor>,
     pending: Option<Instant>,
@@ -269,7 +269,7 @@ impl App {
             hits: Vec::new(),
             results: ListState::default(),
             detail: None,
-            previous_detail: None,
+            detail_history: Vec::new(),
             filters: None,
             filter_editor: None,
             pending: Some(Instant::now()),
@@ -421,12 +421,12 @@ impl App {
         }
         if let Some(detail) = &mut self.detail {
             match key.code {
-                KeyCode::Esc => self.detail = self.previous_detail.take(),
+                KeyCode::Esc => self.detail = self.detail_history.pop(),
                 KeyCode::Enter => {
-                    if let Some(pdgid) = detail.selected_channel()
-                        && let Some(channel) = Detail::open_channel(db, pdgid)?
+                    if let Some(pdgid) = detail.selected_entry()
+                        && let Some(entry) = Detail::open_entry(db, pdgid)?
                     {
-                        self.previous_detail = self.detail.replace(channel);
+                        self.detail_history.extend(self.detail.replace(entry));
                     }
                 }
                 KeyCode::Char('c') => return Ok(Action::copy(detail.name_or_id())),
@@ -579,8 +579,8 @@ impl App {
 
     fn draw_detail(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if let Some(detail) = &mut self.detail {
-            if detail.view == View::Matches {
-                detail.draw_matches(frame, area, self.accent);
+            if detail.view.is_list() {
+                detail.draw_list(frame, area, self.accent);
                 return;
             }
             let block = Block::bordered()
@@ -618,8 +618,12 @@ impl App {
         }
         if let Some(detail) = &self.detail {
             let compact = width < 64;
-            if detail.view == View::Matches {
-                lines.push(Line::raw("↑↓ Select  Enter Open channel  Esc Back"));
+            if detail.view.is_list() {
+                lines.push(Line::raw(if detail.view == View::Matches {
+                    "↑↓ Select  Enter Open channel  Esc Back"
+                } else {
+                    "↑↓ Select  Enter Follow link  Esc Back"
+                }));
             }
             let mut views = if compact {
                 lines.push(Line::styled("1 Overview  2 Mass  3 Decays", self.accent));
@@ -633,8 +637,9 @@ impl App {
             if detail.has_matches() {
                 views.push_str("  6 Matches");
             }
+            views.push_str("  7 Links");
             lines.push(Line::styled(views, self.accent));
-            if detail.view != View::Matches {
+            if !detail.view.is_list() {
                 lines.push(Line::raw(if compact {
                     "c Name  i ID  Esc Back"
                 } else {
@@ -798,36 +803,42 @@ mod tests {
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
     }
 
+    fn search_with_kaon_filters(db: &Pdg) -> App {
+        let mut app = App::new("", false, SearchSource::default());
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(db, key(KeyCode::F(2))).unwrap();
+        app.key(db, key(KeyCode::Char(' '))).unwrap();
+        app.key(db, key(KeyCode::End)).unwrap();
+        app.key(db, key(KeyCode::Up)).unwrap();
+        assert!(matches!(
+            app.key(db, key(KeyCode::Enter)).unwrap(),
+            Action::None
+        ));
+        app.key(db, key(KeyCode::Tab)).unwrap();
+        app.key(db, key(KeyCode::Tab)).unwrap();
+        for _ in 0..5 {
+            app.key(db, key(KeyCode::Right)).unwrap();
+        }
+        app.key(db, key(KeyCode::Tab)).unwrap();
+        app.key(db, key(KeyCode::Tab)).unwrap();
+        app.paste("900..2000");
+        app.key(db, key(KeyCode::Tab)).unwrap();
+        app.key(db, key(KeyCode::Tab)).unwrap();
+        app.paste("KS,KS");
+        assert!(matches!(
+            app.key(db, key(KeyCode::Enter)).unwrap(),
+            Action::ApplyFilters
+        ));
+        app.apply_filters(db);
+        assert!(app.filter_editor.is_none());
+        app
+    }
+
     #[test]
     fn filters_support_blank_queries_and_open_the_recorded_channel() {
         let db = test_db();
-        let mut app = App::new("", false, SearchSource::default());
+        let mut app = search_with_kaon_filters(&db);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        app.key(&db, key(KeyCode::F(2))).unwrap();
-        app.key(&db, key(KeyCode::Char(' '))).unwrap();
-        app.key(&db, key(KeyCode::End)).unwrap();
-        app.key(&db, key(KeyCode::Up)).unwrap();
-        assert!(matches!(
-            app.key(&db, key(KeyCode::Enter)).unwrap(),
-            Action::None
-        ));
-        app.key(&db, key(KeyCode::Tab)).unwrap();
-        app.key(&db, key(KeyCode::Tab)).unwrap();
-        for _ in 0..5 {
-            app.key(&db, key(KeyCode::Right)).unwrap();
-        }
-        app.key(&db, key(KeyCode::Tab)).unwrap();
-        app.key(&db, key(KeyCode::Tab)).unwrap();
-        app.paste("900..2000");
-        app.key(&db, key(KeyCode::Tab)).unwrap();
-        app.key(&db, key(KeyCode::Tab)).unwrap();
-        app.paste("KS,KS");
-        assert!(matches!(
-            app.key(&db, key(KeyCode::Enter)).unwrap(),
-            Action::ApplyFilters
-        ));
-        app.apply_filters(&db);
-        assert!(app.filter_editor.is_none());
         assert_eq!(app.hits.len(), 27);
         assert_eq!(app.input.value(), "");
         assert!(matches!(
@@ -857,14 +868,14 @@ mod tests {
 
         app.key(&db, key(KeyCode::Enter)).unwrap();
         assert_eq!(
-            app.detail.as_ref().unwrap().selected_channel(),
+            app.detail.as_ref().unwrap().selected_entry(),
             Some("M003.1")
         );
         app.key(&db, key(KeyCode::Enter)).unwrap();
         assert_eq!(app.detail.as_ref().unwrap().id(), "M003.1");
         app.key(&db, key(KeyCode::Esc)).unwrap();
         assert_eq!(
-            app.detail.as_ref().unwrap().selected_channel(),
+            app.detail.as_ref().unwrap().selected_entry(),
             Some("M003.1")
         );
         app.key(&db, key(KeyCode::Esc)).unwrap();
@@ -889,6 +900,77 @@ mod tests {
         app.key(&db, key(KeyCode::Tab)).unwrap();
         app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+    }
+
+    #[test]
+    fn following_entry_links_restores_each_detail_and_the_filtered_search() {
+        let db = test_db();
+        let mut app = search_with_kaon_filters(&db);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.paste("f980");
+        app.search(&db).unwrap();
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003.1");
+
+        app.key(&db, key(KeyCode::Char('7'))).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().selected_entry(), Some("M003"));
+        app.key(&db, key(KeyCode::Down)).unwrap();
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_entry(),
+            Some("M003R1")
+        );
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003R1");
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_entry(),
+            Some("M003R1")
+        );
+        app.key(&db, key(KeyCode::Up)).unwrap();
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003");
+
+        app.key(&db, key(KeyCode::Char('7'))).unwrap();
+        app.key(&db, key(KeyCode::Down)).unwrap();
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_entry(),
+            Some("M003M1")
+        );
+        let backend = ratatui::backend::TestBackend::new(45, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| app.draw_detail(frame, frame.area()))
+            .unwrap();
+        let parent_view = terminal.backend().buffer().clone();
+
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003M1");
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003");
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_entry(),
+            Some("M003M1")
+        );
+        terminal
+            .draw(|frame| app.draw_detail(frame, frame.area()))
+            .unwrap();
+        assert_eq!(terminal.backend().buffer(), &parent_view);
+
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003.1");
+        assert_eq!(app.detail.as_ref().unwrap().selected_entry(), Some("M003"));
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert_eq!(
+            app.detail.as_ref().unwrap().selected_entry(),
+            Some("M003.1")
+        );
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert!(app.detail.is_none());
+        assert!(app.detail_history.is_empty());
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+        assert_eq!(app.input.value(), "f980");
+        assert!(app.filters.is_some());
     }
 
     #[test]
