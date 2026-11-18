@@ -11,12 +11,13 @@ mod database;
 mod lookup;
 mod models;
 mod particle_search;
+pub use database::PdgDatabaseInfo;
 pub use lookup::{Lookup, LookupSelector};
 pub use models::*;
 pub use particle_search::{ParticleMatchKind, ParticleSearchHit};
 
-/// The default PDG edition used by this crate.
-pub const LATEST_EDITION: &str = "2025";
+/// The edition of the pinned default download. Use [`Pdg::edition`] for an opened database.
+pub const LATEST_EDITION: &str = "2026";
 
 /// Result type returned by fallible `pdg-rs` operations.
 pub type PdgResult<T> = Result<T, PdgError>;
@@ -39,6 +40,17 @@ pub enum PdgError {
     /// Downloading the PDG database failed.
     #[error("failed to download PDG database: {0}")]
     Download(String),
+    /// The database does not declare an edition or contain editioned numeric data.
+    #[error("database has no declared edition or editioned numeric data")]
+    DatabaseEditionMissing,
+    /// The requested numeric edition has no rows in the opened database.
+    #[error("PDG edition {requested:?} is unavailable. Available editions: {}", available.join(", "))]
+    EditionUnavailable {
+        /// The edition that was requested.
+        requested: String,
+        /// Numeric editions available in the opened file, newest first.
+        available: Vec<String>,
+    },
     /// A cached or downloaded PDG database has the wrong byte length.
     #[error(
         "PDG database size mismatch for {path:?}: expected {expected} bytes, got {actual} bytes"
@@ -110,6 +122,8 @@ pub enum PdgError {
 #[derive(Debug)]
 pub struct Pdg {
     conn: Connection,
+    info: PdgDatabaseInfo,
+    edition_override: Option<String>,
 }
 
 impl Pdg {
@@ -152,17 +166,68 @@ impl Pdg {
     /// Opens a PDG `SQLite` database at `path`.
     ///
     /// This is useful for applications that manage their own database file or
-    /// want to use a different PDG edition. Use [`Pdg::open`] for the default
-    /// cache-or-download behavior.
+    /// want to use a different PDG release. Numeric queries default to the file's
+    /// edition. Use [`Pdg::with_edition`] to select another edition in the file.
     ///
     /// # Errors
     ///
-    /// Returns a database error if `path` cannot be opened or initialized.
+    /// Returns an error if `path` cannot be opened or initialized or has no edition.
     pub fn open_path(path: impl AsRef<Path>) -> PdgResult<Self> {
         let conn = Connection::open(path)?;
-        let pdg = Self { conn };
+        let info = database::read_database_info(&conn)?;
+        let pdg = Self {
+            conn,
+            info,
+            edition_override: None,
+        };
         pdg.initialize_text_search()?;
         Ok(pdg)
+    }
+
+    /// Returns the edition selected for numeric data, property filters, and branching values.
+    #[must_use]
+    pub fn edition(&self) -> &str {
+        self.edition_override
+            .as_deref()
+            .unwrap_or(&self.info.edition)
+    }
+
+    /// Returns metadata for the opened database release.
+    #[must_use]
+    pub const fn database_info(&self) -> &PdgDatabaseInfo {
+        &self.info
+    }
+
+    /// Lists the editions with numeric data in this database, newest first.
+    ///
+    /// # Errors
+    /// Returns a database error if the query fails.
+    pub fn available_editions(&self) -> PdgResult<Vec<String>> {
+        database::available_editions(&self.conn)
+    }
+
+    /// Selects an edition for numeric data, property filters, and branching values.
+    ///
+    /// The particle catalogue, decay listings, text, and measurements come from the file's release.
+    ///
+    /// # Errors
+    /// Returns [`PdgError::EditionUnavailable`] if the edition has no numeric rows,
+    /// or a database error if the query fails.
+    pub fn with_edition(mut self, edition: impl AsRef<str>) -> PdgResult<Self> {
+        let edition = edition.as_ref().trim();
+        let available: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pdgdata WHERE edition = ?1 AND trim(edition) <> '')",
+            [edition],
+            |row| row.get(0),
+        )?;
+        if !available {
+            return Err(PdgError::EditionUnavailable {
+                requested: edition.to_owned(),
+                available: self.available_editions()?,
+            });
+        }
+        self.edition_override = Some(edition.to_owned());
+        Ok(self)
     }
 
     /// Ensures the default database exists in the local cache and returns its path.
@@ -635,7 +700,7 @@ impl Pdg {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// Returns latest-edition numeric data rows for a PDG identifier.
+    /// Returns numeric data rows for a PDG identifier in the selected [`Pdg::edition`].
     ///
     /// # Errors
     ///
@@ -648,7 +713,7 @@ impl Pdg {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
-            .query_map([&pdgid, LATEST_EDITION], |row| {
+            .query_map([pdgid.as_str(), self.edition()], |row| {
                 DataEntry::from_row(self, row)
             })?
             .collect::<Result<Vec<_>, _>>()?)
@@ -928,7 +993,7 @@ impl Pdg {
         );
         let mut direct_stmt = self.conn.prepare(&direct_sql)?;
         let direct_rows = direct_stmt
-            .query_map([data_type_code, LATEST_EDITION], |row| {
+            .query_map([data_type_code, self.edition()], |row| {
                 Ok((
                     row.get::<_, PdgId>(DataEntry::COLUMN_COUNT)?,
                     DataEntry::from_row(self, row)?,
@@ -948,7 +1013,7 @@ impl Pdg {
         let mut section_stmt = self.conn.prepare(&section_sql)?;
         let section_rows = section_stmt
             .query_map(
-                [data_type_code, DataType::Section.to_code(), LATEST_EDITION],
+                [data_type_code, DataType::Section.to_code(), self.edition()],
                 |row| {
                     Ok((
                         row.get::<_, PdgId>(DataEntry::COLUMN_COUNT)?,
@@ -1212,12 +1277,97 @@ fn fts_query(query: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    const TEST_DB_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/data/pdgall-2025-v0.2.2.sqlite"
+    );
+
     fn test_pdg() -> Pdg {
-        Pdg::open_path(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/pdgall-2025-v0.2.2.sqlite"
-        ))
-        .unwrap()
+        Pdg::open_path(TEST_DB_PATH).unwrap()
+    }
+
+    #[test]
+    fn selected_edition_applies_to_properties_and_branching_values() {
+        let db = test_pdg().with_edition("2024").unwrap();
+        assert_eq!(db.edition(), "2024");
+        assert_eq!(db.database_info().edition, "2025");
+
+        let pion = db.particle("pi+").unwrap().unwrap();
+        assert_eq!(pion.mass().unwrap().unwrap().edition, "2024");
+        let resonance = db.particle("a_0(980)0").unwrap().unwrap();
+        assert_eq!(resonance.mass().unwrap().unwrap().edition, "2024");
+
+        let fractions = pion.branching_fractions().unwrap();
+        assert!(!fractions.is_empty());
+        assert!(
+            fractions
+                .iter()
+                .all(|branch| branch.value.edition == "2024")
+        );
+        let related = fractions
+            .iter()
+            .flat_map(|branch| &branch.related_data)
+            .collect::<Vec<_>>();
+        assert!(!related.is_empty());
+        assert!(related.iter().all(|branch| branch.value.edition == "2024"));
+        let ratios = pion.branching_ratios().unwrap();
+        assert!(!ratios.is_empty());
+        assert!(ratios.iter().all(|branch| branch.value.edition == "2024"));
+    }
+
+    #[test]
+    fn numeric_search_and_default_edition_follow_the_opened_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("historical.sqlite");
+        std::fs::copy(TEST_DB_PATH, &path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        // Separate the mass intervals in the fixture so the filter can distinguish the editions.
+        conn.execute_batch(
+            "UPDATE pdgdata SET value = 160, error_positive = 0, error_negative = 0
+             WHERE pdgid = 'S008M' AND edition = '2024';",
+        )
+        .unwrap();
+
+        let query = ParticleSearchQuery::new()
+            .mcid(211)
+            .mass_range_mev(160.0, 160.0);
+        let db = Pdg::open_path(&path).unwrap();
+        assert!(db.search_particles(query.clone()).unwrap().is_empty());
+        let db = db.with_edition("2024").unwrap();
+        assert_eq!(db.search_particles(query.clone()).unwrap()[0].name, "pi+");
+        drop(db);
+
+        conn.execute_batch(
+            "UPDATE pdginfo SET value = '2024' WHERE name = 'edition';
+             DELETE FROM pdgdata WHERE edition > '2024';",
+        )
+        .unwrap();
+        let db = Pdg::open_path(&path).unwrap();
+        assert_eq!(db.edition(), "2024");
+        assert_eq!(db.search_particles(query).unwrap()[0].name, "pi+");
+        let data = db.data_for("S008M").unwrap();
+        assert!(!data.is_empty());
+        assert!(data.iter().all(|row| row.edition == "2024"));
+        assert!(
+            matches!(db.with_edition("2025"), Err(PdgError::EditionUnavailable { requested, .. }) if requested == "2025")
+        );
+    }
+
+    #[test]
+    fn database_metadata_can_fall_back_to_the_newest_numeric_edition() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pdgdata (edition TEXT);
+             INSERT INTO pdgdata VALUES ('2024'), ('2025'), ('2025'), (NULL), ('');",
+        )
+        .unwrap();
+        let info = database::read_database_info(&conn).unwrap();
+        assert_eq!(info.edition, "2025");
+        assert_eq!(info.data_release, None);
+        assert_eq!(
+            database::available_editions(&conn).unwrap(),
+            ["2025", "2024"]
+        );
     }
 
     #[test]

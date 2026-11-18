@@ -2,9 +2,9 @@
 
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use pdg_rs::{
-    DataEntry, DataType, ParticleProperty, Pdg, PdgFootnote, PdgIdEntry, PdgMeasurement,
-    PdgMeasurementValue, PdgParticle, PdgReference, PdgResult, PdgText, TextSearchResult,
-    TextSearchSource,
+    DataEntry, DataType, ParticleProperty, Pdg, PdgDatabaseInfo, PdgFootnote, PdgIdEntry,
+    PdgMeasurement, PdgMeasurementValue, PdgParticle, PdgReference, PdgResult, PdgText,
+    TextSearchResult, TextSearchSource,
 };
 use serde::Serialize;
 
@@ -342,6 +342,8 @@ impl From<&PdgFootnote> for FootnoteDto {
 
 #[derive(Serialize)]
 pub(crate) struct ShowDto {
+    pub(crate) edition: String,
+    pub(crate) database: PdgDatabaseInfo,
     pub(crate) entry: PdgIdEntryDto,
     pub(crate) particle: Option<ParticleDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

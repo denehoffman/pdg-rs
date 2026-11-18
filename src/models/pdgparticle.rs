@@ -9,8 +9,7 @@ use rusqlite::{
 };
 
 use crate::{
-    DataEntry, DataType, LATEST_EDITION, Pdg, PdgFootnote, PdgId, PdgItem, PdgMeasurement,
-    PdgResult, PdgText,
+    DataEntry, DataType, Pdg, PdgFootnote, PdgId, PdgItem, PdgMeasurement, PdgResult, PdgText,
 };
 
 /// Particle/antiparticle relationship encoded by the PDG particle table.
@@ -536,16 +535,16 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
-    /// Returns a latest-edition property stored directly under this particle.
+    /// Returns a property stored directly under this particle in the selected edition.
     ///
     /// # Errors
     ///
     /// Returns a database error if the data query fails.
     pub fn direct_property(&self, data_type: DataType) -> PdgResult<Option<DataEntry<'pdg>>> {
-        self.query(data_type, LATEST_EDITION)
+        self.query(data_type, self.db.edition())
     }
 
-    /// Returns a latest-edition property, checking direct and section data.
+    /// Returns a property in the selected edition, checking direct and section data.
     ///
     /// # Errors
     ///
@@ -686,7 +685,7 @@ impl<'pdg> PdgParticle<'pdg> {
         })
     }
 
-    /// Returns the latest-edition mass entry, if available.
+    /// Returns the mass entry for the selected edition, if available.
     ///
     /// # Errors
     ///
@@ -696,7 +695,7 @@ impl<'pdg> PdgParticle<'pdg> {
             .property(DataType::Mass)?
             .map(|property| property.value))
     }
-    /// Returns the latest-edition lifetime entry, if available.
+    /// Returns the lifetime entry for the selected edition, if available.
     ///
     /// # Errors
     ///
@@ -706,7 +705,7 @@ impl<'pdg> PdgParticle<'pdg> {
             .property(DataType::Lifetime)?
             .map(|property| property.value))
     }
-    /// Returns the latest-edition full-width entry, if available.
+    /// Returns the full-width entry for the selected edition, if available.
     ///
     /// # Errors
     ///
@@ -867,7 +866,7 @@ impl<'pdg> PdgParticle<'pdg> {
     /// Returns a database error if branching-ratio data cannot be loaded.
     pub fn branching_ratios(&self) -> PdgResult<Vec<BranchingRatio<'pdg>>> {
         Ok(self
-            .decay_data(DataType::BranchingRatio, LATEST_EDITION)?
+            .decay_data(DataType::BranchingRatio)?
             .into_iter()
             .map(|data| BranchingRatio {
                 pdgid: data.pdgid,
@@ -964,41 +963,34 @@ impl<'pdg> PdgParticle<'pdg> {
     ) -> PdgResult<Vec<BranchingFractionWithSort<'pdg>>> {
         let mut branching_fractions = Vec::new();
         for (data_type, kind) in data_types {
-            branching_fractions.extend(
-                self.decay_data(*data_type, LATEST_EDITION)?
-                    .into_iter()
-                    .map(|data| BranchingFractionWithSort {
-                        data: BranchingFraction {
-                            pdgid: data.pdgid,
-                            description: data.description,
-                            mode_number: data.mode_number,
-                            value: data.data,
-                            kind: *kind,
-                            products: Vec::new(),
-                            related_data: Vec::new(),
-                        },
-                        sort: data.sort,
-                    }),
-            );
+            branching_fractions.extend(self.decay_data(*data_type)?.into_iter().map(|data| {
+                BranchingFractionWithSort {
+                    data: BranchingFraction {
+                        pdgid: data.pdgid,
+                        description: data.description,
+                        mode_number: data.mode_number,
+                        value: data.data,
+                        kind: *kind,
+                        products: Vec::new(),
+                        related_data: Vec::new(),
+                    },
+                    sort: data.sort,
+                }
+            }));
         }
         branching_fractions.sort_by_key(|branching_fraction| branching_fraction.sort);
         Ok(branching_fractions)
     }
 
-    fn decay_data(
-        &self,
-        data_type: DataType,
-        edition: impl Into<String>,
-    ) -> PdgResult<Vec<DecayData<'pdg>>> {
+    fn decay_data(&self, data_type: DataType) -> PdgResult<Vec<DecayData<'pdg>>> {
         let data_type = data_type.to_code();
-        let edition = edition.into();
         let sql = format!(
             "SELECT {}, pdgid.description, pdgid.mode_number, pdgid.sort FROM pdgdata JOIN pdgid ON pdgid.id = pdgdata.pdgid_id WHERE pdgid.data_type = ?1 AND pdgid.parent_pdgid = ?2 AND pdgdata.edition = ?3 ORDER BY pdgid.sort ASC, pdgdata.sort ASC",
             DataEntry::COLUMNS
         );
         let mut stmt = self.db.db().prepare(&sql)?;
         Ok(stmt
-            .query_map([data_type, &self.pdgid, &edition], |row| {
+            .query_map([data_type, self.pdgid.as_str(), self.db.edition()], |row| {
                 DecayData::from_row(self.db, row)
             })?
             .collect::<Result<Vec<_>, _>>()?)
@@ -1070,7 +1062,7 @@ impl<'pdg> PdgParticle<'pdg> {
         );
 
         let mut params = pdgids;
-        params.push(LATEST_EDITION);
+        params.push(self.db.edition());
         let mut stmt = self.db.db().prepare(&sql)?;
         let mut related_by_pdgid: HashMap<PdgId, Vec<RelatedDataEntry<'pdg>>> = HashMap::new();
         let rows = stmt.query_map(params_from_iter(params), |row| {

@@ -1,4 +1,10 @@
-use std::{collections::HashSet, env, fs, path::PathBuf, process::ExitCode, str::FromStr};
+use std::{
+    collections::HashSet,
+    env, fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    str::FromStr,
+};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{ColumnConstraint, ContentArrangement, Width};
@@ -269,6 +275,9 @@ struct FindCommand {
     /// Print the full matching text below each snippet.
     #[arg(long, requires = "text")]
     show_full_text: bool,
+    /// Use an edition available in this file for numeric properties, such as 2024.
+    #[arg(long, conflicts_with = "text")]
+    edition: Option<String>,
     /// Search query. Particle names support aliases, common notation, and typos.
     query: Option<String>,
     #[command(flatten, next_help_heading = "Output options")]
@@ -288,6 +297,9 @@ struct ShowCommand {
     /// Look up a particle by signed Monte Carlo ID.
     #[arg(long, allow_hyphen_values = true, conflicts_with = "target")]
     mcid: Option<isize>,
+    /// Use an edition available in this file for numeric data, such as 2024.
+    #[arg(long)]
+    edition: Option<String>,
     #[command(flatten)]
     output: ShowOutput,
 }
@@ -441,11 +453,15 @@ fn print_help(subcommand: Option<&str>) -> CliResult<()> {
     Ok(())
 }
 
-fn open_pdg(offline: bool) -> CliResult<Pdg> {
-    Ok(if offline {
+fn open_pdg(offline: bool, edition: Option<&str>) -> CliResult<Pdg> {
+    let db = if offline {
         Pdg::open_cached()?
     } else {
         Pdg::open()?
+    };
+    Ok(match edition {
+        Some(edition) => db.with_edition(edition)?,
+        None => db,
     })
 }
 
@@ -453,19 +469,16 @@ fn run_db(command: &DbCommand) -> CliResult<()> {
     match command.command {
         DbCommands::Status => {
             if let Some(path) = env::var_os("PDG_RS_DB_PATH").map(PathBuf::from) {
-                Pdg::open_cached()?;
-                println!("database override: {}", path.display());
-                return Ok(());
+                return print_database_status("database override", &path);
             }
 
             let path = Pdg::cached_database_path()?;
             if path.exists() {
-                Pdg::open_cached()?;
-                println!("cached database: {}", path.display());
+                print_database_status("cached database", &path)
             } else {
                 println!("database not cached: {}", path.display());
+                Ok(())
             }
-            Ok(())
         }
         DbCommands::Fetch => {
             let path = Pdg::ensure_database()?;
@@ -489,6 +502,24 @@ fn run_db(command: &DbCommand) -> CliResult<()> {
     }
 }
 
+fn print_database_status(source: &str, path: &Path) -> CliResult<()> {
+    let db = Pdg::open_cached()?;
+    let info = db.database_info();
+    let editions = db.available_editions()?;
+    println!("{source}: {}", path.display());
+    println!("database edition: {}", info.edition);
+    if let Some(schema_version) = &info.schema_version {
+        println!("schema version: {schema_version}");
+    }
+    if let Some(release) = &info.data_release_timestamp {
+        println!("data release timestamp: {release}");
+    } else if let Some(release) = &info.data_release {
+        println!("data release: {release}");
+    }
+    println!("available numeric editions: {}", editions.join(", "));
+    Ok(())
+}
+
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 
 fn run_find(command: &FindCommand, offline: bool) -> CliResult<()> {
@@ -501,7 +532,7 @@ fn run_find(command: &FindCommand, offline: bool) -> CliResult<()> {
     }
 
     let filters = build_query(&command.filters)?;
-    let db = open_pdg(offline)?;
+    let db = open_pdg(offline, command.edition.as_deref())?;
     let mut particles = if let Some(query) = query {
         db.find_particles(query, filters)?
             .into_iter()
@@ -522,7 +553,7 @@ fn run_text(
     show_full_text: bool,
     offline: bool,
 ) -> CliResult<()> {
-    let db = open_pdg(offline)?;
+    let db = open_pdg(offline, None)?;
     let mut results = db.search_text(query)?;
     apply_search_limit(&mut results, output, Some(DEFAULT_SEARCH_LIMIT));
     match output.format {
@@ -540,7 +571,7 @@ fn run_text(
 }
 
 fn run_show(command: &ShowCommand, offline: bool) -> CliResult<()> {
-    let db = open_pdg(offline)?;
+    let db = open_pdg(offline, command.edition.as_deref())?;
     let (target, lookup) = if let Some(mcid) = command.mcid {
         (
             format!("MCID {mcid}"),
@@ -628,6 +659,15 @@ fn print_show(
         db.texts_for(&entry.pdgid)?
     };
     print_title(&format!("{} {}", entry.pdgid, entry.description), &texts);
+    let database_edition = &db.database_info().edition;
+    if db.edition() == database_edition {
+        println!("PDG edition {database_edition}");
+    } else {
+        println!(
+            "Numeric edition {} from PDG database edition {database_edition}",
+            db.edition()
+        );
+    }
     print_entry_summary(entry);
 
     if let Some(particle) = particles.first() {
@@ -890,6 +930,8 @@ fn show_dto(
         ),
     };
     Ok(ShowDto {
+        edition: db.edition().to_owned(),
+        database: db.database_info().clone(),
         entry: PdgIdEntryDto::from(entry),
         particle,
         variants,
