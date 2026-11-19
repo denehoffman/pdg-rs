@@ -1,6 +1,8 @@
+use std::ops::Range;
+
 use clap::Parser;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use pdg_rs::{OwnedParticleFilterHit, ParticleFilterHit, Pdg};
+use pdg_rs::{DecayStateExpansion, DecayStateSide, OwnedParticleFilterHit, ParticleFilterHit, Pdg};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -235,6 +237,14 @@ impl Field {
         }
     }
 
+    const fn decay_side(self) -> Option<DecayStateSide> {
+        match self {
+            Self::Products => Some(DecayStateSide::Final),
+            Self::DecaysFrom => Some(DecayStateSide::Initial),
+            _ => None,
+        }
+    }
+
     const fn choices(self) -> &'static [&'static str] {
         match self {
             Self::Class => CLASS_VALUES,
@@ -301,8 +311,44 @@ pub(super) struct FilterEditor {
     draft: Draft,
     focus: usize,
     menu: Option<ListState>,
+    suggestions: Option<DecaySuggestions>,
     pub(super) error: Option<String>,
     pub(super) applying: bool,
+}
+
+struct DecaySuggestions {
+    names: Vec<String>,
+    state: ListState,
+}
+
+impl DecaySuggestions {
+    fn draw_below(&mut self, frame: &mut Frame<'_>, body: Rect) -> Rect {
+        let rows = u16::try_from(self.names.len())
+            .unwrap_or(u16::MAX)
+            .min(4)
+            .min(body.height.saturating_sub(1));
+        let [fields, choices] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(rows)]).areas(body);
+        let items = self.names.iter().map(|name| ListItem::new(name.as_str()));
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_symbol("› ")
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            choices,
+            &mut self.state,
+        );
+        fields
+    }
+}
+
+fn decay_token(input: &SearchInput) -> Range<usize> {
+    let start = input.text[..input.cursor]
+        .rfind(',')
+        .map_or(0, |index| index + 1);
+    let end = input.text[input.cursor..]
+        .find(',')
+        .map_or(input.text.len(), |index| input.cursor + index);
+    start..end
 }
 
 impl FilterEditor {
@@ -311,6 +357,7 @@ impl FilterEditor {
             draft: filters.map_or_else(Draft::default, |filters| filters.draft.clone()),
             focus: 0,
             menu: None,
+            suggestions: None,
             error: None,
             applying: false,
         }
@@ -332,7 +379,7 @@ impl FilterEditor {
         }))
     }
 
-    pub(super) fn key(&mut self, key: KeyEvent) -> EditorAction {
+    pub(super) fn key(&mut self, db: &Pdg, key: KeyEvent) -> EditorAction {
         self.error = None;
         let field = self.focused_field();
         if let Some(menu) = &mut self.menu {
@@ -351,6 +398,9 @@ impl FilterEditor {
             }
             return EditorAction::Continue;
         }
+        if self.suggestion_key(field, key.code) {
+            return EditorAction::Continue;
+        }
         match key.code {
             KeyCode::Esc => return EditorAction::Cancel,
             KeyCode::Enter => {
@@ -365,7 +415,13 @@ impl FilterEditor {
             }
             _ => match &mut self.draft.controls[field as usize] {
                 Control::Text(input) => {
-                    input.key(key);
+                    let previous_token = field.decay_side().map(|_| decay_token(input));
+                    let changed = input.key(key);
+                    if let Some(previous_token) = previous_token
+                        && (changed || previous_token != decay_token(input))
+                    {
+                        self.refresh_suggestions(db);
+                    }
                 }
                 Control::Choice(index) => {
                     let count = field.choice_count();
@@ -382,7 +438,64 @@ impl FilterEditor {
                 }
             },
         }
+        if self.focused_field() != field {
+            self.refresh_suggestions(db);
+        }
         EditorAction::Continue
+    }
+
+    fn refresh_suggestions(&mut self, db: &Pdg) {
+        self.suggestions = None;
+        let field = self.focused_field();
+        let Some(side) = field.decay_side() else {
+            return;
+        };
+        let Control::Text(input) = &self.draft.controls[field as usize] else {
+            return;
+        };
+        let expansion = if self.draft.value(Field::DecayExpansion) == "literal" {
+            DecayStateExpansion::Literal
+        } else {
+            DecayStateExpansion::Inclusive
+        };
+        match db.suggest_decay_states(&input.text[decay_token(input)], side, expansion, 8) {
+            Ok(names) if !names.is_empty() => {
+                self.suggestions = Some(DecaySuggestions {
+                    names,
+                    state: ListState::default(),
+                });
+            }
+            Err(error) => self.error = Some(format!("Decay suggestions unavailable. {error}")),
+            _ => {}
+        }
+    }
+
+    fn suggestion_key(&mut self, field: Field, key: KeyCode) -> bool {
+        let Some(suggestions) = &mut self.suggestions else {
+            return false;
+        };
+        let selected = suggestions.state.selected();
+        match (key, selected) {
+            (KeyCode::Down, selected) => {
+                let index =
+                    selected.map_or(0, |index| (index + 1).min(suggestions.names.len() - 1));
+                suggestions.state.select(Some(index));
+            }
+            (KeyCode::Up, Some(_)) => suggestions.state.select_previous(),
+            (KeyCode::Esc, _) => self.suggestions = None,
+            (KeyCode::Enter, Some(index)) => {
+                let Control::Text(input) = &mut self.draft.controls[field as usize] else {
+                    return false;
+                };
+                let replacement = &suggestions.names[index];
+                let token = decay_token(input);
+                input.cursor = token.start + replacement.len();
+                input.text.replace_range(token, replacement);
+                self.suggestions = None;
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn previous_field(&mut self) {
@@ -403,11 +516,12 @@ impl FilterEditor {
             .expect("focused filter field is visible")
     }
 
-    pub(super) fn paste(&mut self, text: &str) {
+    pub(super) fn paste(&mut self, db: &Pdg, text: &str) {
         let field = self.focused_field();
         if let Control::Text(input) = &mut self.draft.controls[field as usize] {
             input.insert(text);
             self.error = None;
+            self.refresh_suggestions(db);
         }
     }
 
@@ -474,12 +588,29 @@ impl FilterEditor {
             if let Some(hint) = field.hint(self.draft.value(field)) {
                 lines.push(Line::raw(hint));
             }
-            lines.push(Line::styled("Tab Next  ←→ Change  Space Choices", accent));
-            lines.push(Line::styled("Enter Apply  Esc Cancel  ? Help", accent));
+            if let Some(suggestions) = &self.suggestions {
+                let navigation = if suggestions.state.selected().is_some() {
+                    "↑↓ Choose  Enter Fill"
+                } else {
+                    "↓ Suggestions  Enter Apply"
+                };
+                lines.push(Line::styled(navigation, accent));
+                lines.push(Line::styled("Tab Next  Esc Hide  ? Help", accent));
+            } else if field.decay_side().is_some() {
+                lines.push(Line::styled("Tab Next  Enter Apply", accent));
+                lines.push(Line::styled("Esc Cancel  ? Help", accent));
+            } else {
+                lines.push(Line::styled("Tab Next  ←→ Change  Space Choices", accent));
+                lines.push(Line::styled("Enter Apply  Esc Cancel  ? Help", accent));
+            }
             lines
         };
         let footer = Paragraph::new(message).wrap(Wrap { trim: true });
-        let [fields, help] = split_footer(inner, &footer);
+        let [body, help] = split_footer(inner, &footer);
+        let fields = self
+            .suggestions
+            .as_mut()
+            .map_or(body, |suggestions| suggestions.draw_below(frame, body));
         self.draw_fields(frame, fields, accent);
         frame.render_widget(footer, help);
     }
@@ -534,7 +665,7 @@ fn split_footer(area: Rect, footer: &Paragraph<'_>) -> [Rect; 2] {
 mod tests {
     use pdg_rs::{AngularMomentum, Isospin, ParticleType};
 
-    use super::*;
+    use super::{super::tests::test_db, *};
     use crate::QuantumArg;
 
     fn focus(editor: &mut FilterEditor, field: Field) {
@@ -542,29 +673,31 @@ mod tests {
             .fields()
             .position(|candidate| candidate == field)
             .unwrap();
+        editor.suggestions = None;
     }
 
     #[test]
     fn choosing_a_type_and_spin_uses_the_cli_filter_values() {
+        let db = test_db();
         let mut editor = FilterEditor::new(None);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        editor.key(key(KeyCode::Tab));
-        editor.key(key(KeyCode::End));
+        editor.key(&db, key(KeyCode::Tab));
+        editor.key(&db, key(KeyCode::End));
         focus(&mut editor, Field::Spin);
-        editor.key(key(KeyCode::Right));
+        editor.key(&db, key(KeyCode::Right));
         assert!(matches!(
             editor.draft.particle_filters().unwrap().spin,
             Some(QuantumArg::Value(AngularMomentum::J0))
         ));
 
-        editor.key(key(KeyCode::Char(' ')));
-        editor.key(key(KeyCode::End));
+        editor.key(&db, key(KeyCode::Char(' ')));
+        editor.key(&db, key(KeyCode::End));
         assert!(matches!(
-            editor.key(key(KeyCode::Enter)),
+            editor.key(&db, key(KeyCode::Enter)),
             EditorAction::Continue
         ));
-        editor.key(key(KeyCode::Tab));
-        editor.paste("2,3");
+        editor.key(&db, key(KeyCode::Tab));
+        editor.paste(&db, "2,3");
         let filters = editor.draft.particle_filters().unwrap();
         assert_eq!(filters.particle_type, Some(ParticleType::SelfConjugate));
         assert!(matches!(
@@ -572,9 +705,9 @@ mod tests {
             Some(QuantumArg::Value(AngularMomentum::Custom(value))) if value == "2,3"
         ));
         focus(&mut editor, Field::DecayMode);
-        editor.key(key(KeyCode::Right));
-        editor.key(key(KeyCode::Tab));
-        editor.paste("pi+,pi0");
+        editor.key(&db, key(KeyCode::Right));
+        editor.key(&db, key(KeyCode::Tab));
+        editor.paste(&db, "pi+,pi0");
         let applied = AppliedFilters {
             draft: editor.draft,
             summary: String::new(),
@@ -592,6 +725,7 @@ mod tests {
 
     #[test]
     fn missing_value_choices_stay_separate_from_the_label_in_a_narrow_terminal() {
+        let db = test_db();
         let mut editor = FilterEditor::new(None);
         focus(&mut editor, Field::IncludeUnknown);
         let backend = ratatui::backend::TestBackend::new(30, 10);
@@ -608,12 +742,13 @@ mod tests {
                 .map(ratatui::buffer::Cell::symbol)
                 .collect();
             assert!(screen.contains(&format!("No value    {choice}")));
-            editor.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+            editor.key(&db, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         }
     }
 
     #[test]
     fn decay_choice_hints_follow_the_highlighted_option() {
+        let db = test_db();
         let mut editor = FilterEditor::new(None);
         let backend = ratatui::backend::TestBackend::new(64, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -644,17 +779,50 @@ mod tests {
         ] {
             focus(&mut editor, field);
             assert!(screen(&mut editor).contains(first));
-            editor.key(key(KeyCode::Char(' ')));
+            editor.key(&db, key(KeyCode::Char(' ')));
             assert!(screen(&mut editor).contains(first));
-            editor.key(key(KeyCode::Down));
+            editor.key(&db, key(KeyCode::Down));
             assert!(screen(&mut editor).contains(second));
-            editor.key(key(KeyCode::Enter));
+            editor.key(&db, key(KeyCode::Enter));
             assert!(screen(&mut editor).contains(second));
         }
     }
 
     #[test]
+    fn decay_completion_replaces_only_the_token_under_the_cursor() {
+        let db = test_db();
+        let mut editor = FilterEditor::new(None);
+        focus(&mut editor, Field::Products);
+        editor.paste(&db, "K(S)0, Kₛ,K(S)0");
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        editor.key(&db, key(KeyCode::Home));
+        for _ in 0.."K(S)0, K".len() {
+            editor.key(&db, key(KeyCode::Right));
+        }
+        assert_eq!(editor.suggestions.as_ref().unwrap().names[0], "K(S)0");
+        editor.key(&db, key(KeyCode::Down));
+        assert!(matches!(
+            editor.key(&db, key(KeyCode::Enter)),
+            EditorAction::Continue
+        ));
+        assert_eq!(
+            editor.draft.particle_filters().unwrap().decays_to,
+            ["K(S)0"; 3]
+        );
+        assert!(editor.suggestions.is_none());
+
+        focus(&mut editor, Field::DecaysFrom);
+        editor.paste(&db, "pi+");
+        assert!(editor.suggestions.is_some());
+        assert!(matches!(
+            editor.key(&db, key(KeyCode::Enter)),
+            EditorAction::Apply
+        ));
+    }
+
+    #[test]
     fn additional_controls_use_the_cli_values_and_boolean_flag() {
+        let db = test_db();
         let mut editor = FilterEditor::new(None);
         for (field, input) in [
             (Field::Mcid, "-211"),
@@ -663,7 +831,7 @@ mod tests {
             (Field::DecaysFrom, "pi+,pi0"),
         ] {
             focus(&mut editor, field);
-            editor.paste(input);
+            editor.paste(&db, input);
         }
         for (field, key) in [
             (Field::Isospin, KeyCode::Right),
@@ -672,7 +840,7 @@ mod tests {
             (Field::DecayExpansion, KeyCode::Right),
         ] {
             focus(&mut editor, field);
-            editor.key(KeyEvent::new(key, KeyModifiers::NONE));
+            editor.key(&db, KeyEvent::new(key, KeyModifiers::NONE));
         }
         let filters = editor.draft.particle_filters().unwrap();
         assert_eq!(filters.mcid, Some(-211));

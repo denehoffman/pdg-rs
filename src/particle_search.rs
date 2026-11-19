@@ -1,9 +1,18 @@
 use std::collections::HashMap;
 
 use crate::{
-    DecayChannelMatch, OwnedDecayChannelMatch, ParticleFilterHit, ParticleSearchQuery,
-    ParticleSummary, Pdg, PdgError, PdgItemType, PdgParticle, PdgResult,
+    DecayChannelMatch, DecayStateExpansion, OwnedDecayChannelMatch, ParticleFilterHit,
+    ParticleSearchQuery, ParticleSummary, Pdg, PdgError, PdgItemType, PdgParticle, PdgResult,
 };
+
+/// Which side of a recorded decay supplies literal state names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecayStateSide {
+    /// Incoming states used by the decays-from filter.
+    Initial,
+    /// Outgoing products used by the decays-to and decay-contains filters.
+    Final,
+}
 
 /// How a particle's name or alias matched a ranked search query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -137,19 +146,88 @@ impl Pdg {
     }
 
     pub(super) fn resolve_decay_names(&self, states: Vec<String>) -> PdgResult<Vec<Vec<String>>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT name, item_type FROM pdgitem WHERE item_type NOT IN ('A', 'S', 'W') ORDER BY name",
-        )?;
-        let names = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, PdgItemType>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let names = self.decay_item_names()?;
         let aliases = self.particle_aliases()?;
         states
             .into_iter()
             .map(|state| resolve_decay_name(state.trim(), &names, &aliases))
             .collect()
+    }
+
+    /// Ranks names to insert into one entry of a decay filter.
+    ///
+    /// Inclusive mode suggests named particles and groups using the particle matcher.
+    /// Literal mode suggests exact recorded spellings for the requested side of the decay.
+    /// Empty queries return no suggestions.
+    ///
+    /// # Errors
+    /// Returns a database error if the decay names or aliases cannot be queried.
+    pub fn suggest_decay_states(
+        &self,
+        text: &str,
+        side: DecayStateSide,
+        expansion: DecayStateExpansion,
+        limit: usize,
+    ) -> PdgResult<Vec<String>> {
+        let text = text.trim();
+        let query = normalize_name(text);
+        if query.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (names, aliases) = match expansion {
+            DecayStateExpansion::Inclusive => {
+                let names = self
+                    .decay_item_names()?
+                    .into_iter()
+                    .filter(|(_, kind)| {
+                        matches!(
+                            kind,
+                            PdgItemType::Particle
+                                | PdgItemType::Group
+                                | PdgItemType::ChargeMultiplet
+                        )
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
+                (names, Some(self.particle_aliases()?))
+            }
+            DecayStateExpansion::Literal => {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached("SELECT DISTINCT name FROM pdgdecay WHERE is_outgoing = ?1")?;
+                let names = stmt
+                    .query_map([side == DecayStateSide::Final], |row| row.get(0))?
+                    .collect::<Result<Vec<String>, _>>()?;
+                (names, None)
+            }
+        };
+        let mut matches = names
+            .iter()
+            .filter(|name| !name.contains(',') && name.trim() == *name)
+            .filter_map(|name| {
+                let kind = aliases.as_ref().map_or_else(
+                    || match_kind(&query, &normalize_name(name), false),
+                    |aliases| best_name_match(&query, name, aliases).map(|(kind, _)| kind),
+                )?;
+                Some((kind, name != text, name.chars().count(), name))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_unstable();
+        matches.dedup();
+        Ok(matches
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, _, name)| name.clone())
+            .collect())
+    }
+
+    fn decay_item_names(&self) -> PdgResult<Vec<(String, PdgItemType)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT name, item_type FROM pdgitem WHERE item_type NOT IN ('A', 'S', 'W') ORDER BY name",
+        )?;
+        Ok(stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?)
     }
 
     fn particle_aliases(&self) -> PdgResult<HashMap<String, Vec<String>>> {
