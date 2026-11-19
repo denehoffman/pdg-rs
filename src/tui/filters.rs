@@ -394,7 +394,7 @@ impl FilterEditor {
         frame.render_widget(block, area);
 
         if let Some(menu) = &mut self.menu {
-            let footer = Paragraph::new("↑↓ Select  Enter Choose  Esc Back")
+            let footer = Paragraph::new("↑↓ Select  Enter Choose  Esc Back  ? Help")
                 .style(accent)
                 .wrap(Wrap { trim: true });
             let [choices, help] = split_footer(inner, &footer);
@@ -419,7 +419,7 @@ impl FilterEditor {
                 lines.push(Line::raw(error.as_str()));
             }
             lines.push(Line::styled("Tab Next  ←→ Change  Space Choices", accent));
-            lines.push(Line::styled("Enter Apply  Esc Cancel", accent));
+            lines.push(Line::styled("Enter Apply  Esc Cancel  ? Help", accent));
             lines
         };
         let footer = Paragraph::new(message).wrap(Wrap { trim: true });

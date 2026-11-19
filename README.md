@@ -81,7 +81,9 @@ pdg tui --text 'form factors'
 
 Type to search, press Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. The detail pane numbers the available tabs from left to right starting at 1. Click a tab, press its displayed number, or use Tab and Shift+Tab to switch views. The **Text** tab shows the matched passage for a text result. **Overview** shows the recorded value when you open a specific mass or decay record. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
 
-Press F2 from particle search to edit the filters. Class, particle type, charge, and spin start at **Any**. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
+Press `?` to see keyboard and mouse controls. Close help with `?` or Esc to return to the same screen. Press `/` from an entry to return to the search bar with the current query and filters.
+
+Press Ctrl+F from particle search to open the advanced filters. Class, particle type, charge, and spin start at **Any**. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
 
 Enter applies the filters together and Esc cancels the edits. Mass ranges in `MeV` and decay products are editable, and blank fields accept any value. You can apply filters with an empty search box, then type a name to narrow the results. The browser remembers the particle filters when you switch to text search.
 
