@@ -9,8 +9,9 @@ use crossterm::{
     clipboard::CopyToClipboard,
     cursor::Show,
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
     },
     execute,
 };
@@ -19,9 +20,9 @@ use pdg_rs::{
 };
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 
@@ -51,16 +52,30 @@ pub fn run(command: &TuiCommand, database: &DatabaseOptions) -> CliResult<()> {
         SearchSource::new(database, command.edition.as_deref()),
     );
     let mut terminal = ratatui::try_init().inspect_err(|_| ratatui::restore())?;
+    let panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = reset_terminal_input();
+        panic_hook(info);
+    }));
     let result = (|| {
-        execute!(io::stdout(), EnableBracketedPaste)?;
+        execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
         drive(&mut terminal, &mut app, &db)
     })();
-    let reset = execute!(io::stdout(), DisableBracketedPaste, Show);
+    let reset = reset_terminal_input();
     let restore = ratatui::try_restore();
     result?;
     reset?;
     restore?;
     Ok(())
+}
+
+fn reset_terminal_input() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        Show
+    )
 }
 
 fn drive(terminal: &mut DefaultTerminal, app: &mut App, db: &Pdg) -> CliResult<()> {
@@ -94,6 +109,7 @@ fn drive(terminal: &mut DefaultTerminal, app: &mut App, db: &Pdg) -> CliResult<(
                     }
                 }
             }
+            Event::Mouse(mouse) => app.mouse(db, mouse)?,
             Event::Paste(text) if app.detail.is_none() => app.paste(&text),
             _ => {}
         }
@@ -250,6 +266,7 @@ struct App {
     results: ListState,
     detail: Option<Detail>,
     detail_history: Vec<Detail>,
+    tab_regions: Vec<(Rect, View)>,
     filters: Option<AppliedFilters>,
     filter_editor: Option<FilterEditor>,
     pending: Option<Instant>,
@@ -270,6 +287,7 @@ impl App {
             results: ListState::default(),
             detail: None,
             detail_history: Vec::new(),
+            tab_regions: Vec::new(),
             filters: None,
             filter_editor: None,
             pending: Some(Instant::now()),
@@ -421,6 +439,10 @@ impl App {
         }
         if let Some(detail) = &mut self.detail {
             match key.code {
+                KeyCode::Tab => {
+                    detail.cycle_view(db, key.modifiers.contains(KeyModifiers::SHIFT))?;
+                }
+                KeyCode::BackTab => detail.cycle_view(db, true)?,
                 KeyCode::Esc => self.detail = self.detail_history.pop(),
                 KeyCode::Enter => {
                     if let Some(pdgid) = detail.selected_entry()
@@ -431,11 +453,7 @@ impl App {
                 }
                 KeyCode::Char('c') => return Ok(Action::copy(detail.name_or_id())),
                 KeyCode::Char('i') => return Ok(Action::copy(detail.id())),
-                KeyCode::Char(key) => {
-                    if let Some(view) = View::from_key(key) {
-                        detail.load(db, view)?;
-                    }
-                }
+                KeyCode::Char(key) => detail.select_number(db, key)?,
                 code => detail.navigate(code, self.page),
             }
         } else {
@@ -478,8 +496,25 @@ impl App {
         Ok(Action::None)
     }
 
+    fn mouse(&mut self, db: &Pdg, mouse: MouseEvent) -> PdgResult<()> {
+        let position = Position::new(mouse.column, mouse.row);
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(detail) = &mut self.detail
+            && let Some(&(_, view)) = self
+                .tab_regions
+                .iter()
+                .find(|(area, _)| area.contains(position))
+            && view != detail.view
+        {
+            self.notice = None;
+            detail.load(db, view)?;
+        }
+        Ok(())
+    }
+
     fn draw(&mut self, frame: &mut Frame<'_>, db: &Pdg) {
         let area = frame.area();
+        self.tab_regions.clear();
         if area.width < 30 || area.height < 10 {
             frame.render_widget(
                 Paragraph::new("Resize to at least 30 × 10. Ctrl+C quits.")
@@ -489,7 +524,14 @@ impl App {
             return;
         }
         let wide = area.width >= 80;
-        let footer = self.footer(area.width);
+        let input_rows = if self.detail.is_some() && area.height < 14 {
+            0
+        } else {
+            3
+        };
+        // Fit three rows of tabs and one row of content inside the detail border.
+        let body_rows = if self.detail.is_some() { 6 } else { 3 };
+        let footer = self.footer();
         let filters = if self.mode == Mode::Particles {
             self.filters.as_ref().map(|filters| {
                 Paragraph::new(format!(" {} ", filters.summary)).wrap(Wrap { trim: true })
@@ -502,10 +544,13 @@ impl App {
             .map_or(0, |bar| if bar.line_count(area.width) > 1 { 2 } else { 1 });
         let footer_rows = u16::try_from(footer.line_count(area.width))
             .unwrap_or(u16::MAX)
-            .min(area.height.saturating_sub(7 + filter_rows));
+            .min(
+                area.height
+                    .saturating_sub(1 + input_rows + filter_rows + body_rows),
+            );
         let [header, input, filter_area, body, footer_area] = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(3),
+            Constraint::Length(input_rows),
             Constraint::Length(filter_rows),
             Constraint::Min(1),
             Constraint::Length(footer_rows),
@@ -524,7 +569,9 @@ impl App {
             ]),
             header,
         );
-        self.draw_input(frame, input);
+        if input_rows > 0 {
+            self.draw_input(frame, input);
+        }
         if let Some(filters) = filters {
             frame.render_widget(filters, filter_area);
         }
@@ -579,23 +626,7 @@ impl App {
 
     fn draw_detail(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if let Some(detail) = &mut self.detail {
-            if detail.view.is_list() {
-                detail.draw_list(frame, area, self.accent);
-                return;
-            }
-            let block = Block::bordered()
-                .title(format!(" {} · {} ", detail.id(), detail.view.label()))
-                .border_style(self.accent);
-            let inner = block.inner(area);
-            let paragraph =
-                Paragraph::new(Text::from(detail.lines.clone())).wrap(Wrap { trim: true });
-            let max_scroll = paragraph
-                .line_count(inner.width)
-                .saturating_sub(usize::from(inner.height));
-            detail.scroll = detail
-                .scroll
-                .min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
-            frame.render_widget(paragraph.scroll((detail.scroll, 0)).block(block), area);
+            self.page = detail.draw(frame, area, self.accent, &mut self.tab_regions);
         } else {
             let content = self.selected_hit().map_or_else(
                 || vec![Line::raw("Select a search result to preview it.")],
@@ -610,42 +641,23 @@ impl App {
         }
     }
 
-    fn footer(&self, width: u16) -> Paragraph<'static> {
+    fn footer(&self) -> Paragraph<'static> {
         let mut lines = Vec::new();
         let status = self.status();
         if !status.is_empty() {
             lines.push(Line::raw(status));
         }
         if let Some(detail) = &self.detail {
-            let compact = width < 64;
-            if detail.view.is_list() {
-                lines.push(Line::raw(if detail.view == View::Matches {
-                    "↑↓ Select  Enter Open channel  Esc Back"
-                } else {
-                    "↑↓ Select  Enter Follow link  Esc Back"
-                }));
-            }
-            let mut views = if compact {
-                lines.push(Line::styled("1 Overview  2 Mass  3 Decays", self.accent));
-                "4 Measures  5 Refs".to_owned()
-            } else {
-                "1 Overview  2 Mass  3 Decays  4 Measurements  5 References".to_owned()
+            lines.push(Line::from(vec![
+                Span::styled("Tab/Shift+Tab Views", self.accent),
+                Span::raw("  Esc Back"),
+            ]));
+            let navigation = match detail.view {
+                View::Matches => "↑↓ Select  Enter Open channel",
+                View::Links => "↑↓ Select  Enter Follow link",
+                _ => "↑↓ Scroll  PgUp/PgDn Page",
             };
-            if detail.has_text() {
-                views.push_str("  0 Text");
-            }
-            if detail.has_matches() {
-                views.push_str("  6 Matches");
-            }
-            views.push_str("  7 Links");
-            lines.push(Line::styled(views, self.accent));
-            if !detail.view.is_list() {
-                lines.push(Line::raw(if compact {
-                    "c Name  i ID  Esc Back"
-                } else {
-                    "↑↓ Scroll  PgUp/PgDn Page  c Copy name  i Copy ID  Esc Back"
-                }));
-            }
+            lines.push(Line::raw(format!("{navigation}  c Name  i ID")));
         } else {
             let filters = if self.mode == Mode::Particles {
                 "F2 Filters  "
@@ -913,7 +925,7 @@ mod tests {
         app.key(&db, key(KeyCode::Enter)).unwrap();
         assert_eq!(app.detail.as_ref().unwrap().id(), "M003.1");
 
-        app.key(&db, key(KeyCode::Char('7'))).unwrap();
+        app.key(&db, key(KeyCode::Char('2'))).unwrap();
         assert_eq!(app.detail.as_ref().unwrap().selected_entry(), Some("M003"));
         app.key(&db, key(KeyCode::Down)).unwrap();
         assert_eq!(
@@ -931,13 +943,13 @@ mod tests {
         app.key(&db, key(KeyCode::Enter)).unwrap();
         assert_eq!(app.detail.as_ref().unwrap().id(), "M003");
 
-        app.key(&db, key(KeyCode::Char('7'))).unwrap();
+        app.key(&db, key(KeyCode::Char('6'))).unwrap();
         app.key(&db, key(KeyCode::Down)).unwrap();
         assert_eq!(
             app.detail.as_ref().unwrap().selected_entry(),
             Some("M003M1")
         );
-        let backend = ratatui::backend::TestBackend::new(45, 3);
+        let backend = ratatui::backend::TestBackend::new(45, 5);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| app.draw_detail(frame, frame.area()))
@@ -971,6 +983,152 @@ mod tests {
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
         assert_eq!(app.input.value(), "f980");
         assert!(app.filters.is_some());
+    }
+
+    #[test]
+    fn detail_tabs_are_visible_and_switch_directly() {
+        let db = test_db();
+        for (width, height) in [(100, 26), (48, 16), (30, 10)] {
+            let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+            let mut app = App::new("f980", false, SearchSource::default());
+            app.search(&db).unwrap();
+            app.key(&db, key(KeyCode::Enter)).unwrap();
+            let backend = ratatui::backend::TestBackend::new(width, height);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|frame| app.draw(frame, &db)).unwrap();
+
+            let tab_area = |view| {
+                app.tab_regions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == view)
+                    .unwrap()
+                    .0
+            };
+            let overview = tab_area(View::Overview);
+            let links = tab_area(View::Links);
+            assert_eq!(app.tab_regions.len(), 6);
+            let buffer = terminal.backend().buffer();
+            let active = buffer.cell((overview.x, overview.y)).unwrap();
+            assert_eq!(active.symbol(), "1");
+            assert!(active.modifier.contains(Modifier::REVERSED));
+            let link_cell = buffer.cell((links.x, links.y)).unwrap();
+            assert_eq!(link_cell.symbol(), "6");
+            assert!(!link_cell.modifier.contains(Modifier::REVERSED));
+            if width >= 80 {
+                assert!(overview.x > width / 3);
+            }
+
+            app.key(&db, key(KeyCode::Tab)).unwrap();
+            assert!(matches!(app.detail.as_ref().unwrap().view, View::Mass));
+            app.key(&db, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+                .unwrap();
+            assert!(matches!(app.detail.as_ref().unwrap().view, View::Overview));
+            app.key(&db, KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT))
+                .unwrap();
+            assert!(matches!(app.detail.as_ref().unwrap().view, View::Links));
+            app.key(&db, key(KeyCode::Tab)).unwrap();
+            assert!(matches!(app.detail.as_ref().unwrap().view, View::Overview));
+
+            app.mouse(
+                &db,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: links.right() - 1,
+                    row: links.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .unwrap();
+            assert!(matches!(app.detail.as_ref().unwrap().view, View::Links));
+            terminal.draw(|frame| app.draw(frame, &db)).unwrap();
+            let selected_entry = app.detail.as_ref().unwrap().selected_entry().unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(screen.contains(selected_entry));
+            app.key(&db, key(KeyCode::Char('2'))).unwrap();
+            assert!(matches!(app.detail.as_ref().unwrap().view, View::Mass));
+            app.key(&db, key(KeyCode::Esc)).unwrap();
+            assert!(app.detail.is_none());
+        }
+    }
+
+    #[test]
+    fn detail_tabs_include_the_views_available_for_each_result() {
+        let db = test_db();
+        let cases = [
+            (search_with_kaon_filters(&db), View::Matches, View::Text, 7),
+            (
+                App::new("form factors", true, SearchSource::default()),
+                View::Text,
+                View::Matches,
+                5,
+            ),
+        ];
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let backend = ratatui::backend::TestBackend::new(30, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        for (mut app, initial, unavailable, tab_count) in cases {
+            app.search(&db).unwrap();
+            app.key(&db, key(KeyCode::Enter)).unwrap();
+            terminal.draw(|frame| app.draw(frame, &db)).unwrap();
+            assert!(
+                app.detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.view == initial)
+            );
+            assert_eq!(app.tab_regions.len(), tab_count);
+            assert!(app.tab_regions.iter().any(|&(_, view)| view == initial));
+            assert!(!app.tab_regions.iter().any(|&(_, view)| view == unavailable));
+            assert!(app.tab_regions.iter().any(|&(_, view)| view == View::Links));
+        }
+    }
+
+    #[test]
+    fn branching_ratio_uses_its_overview_and_omits_mass_and_decays() {
+        let db = test_db().with_edition("1997").unwrap();
+        let mut app = App::new("f980", false, SearchSource::default());
+        app.detail = Detail::open_entry(&db, "M003R1").unwrap();
+        let backend = ratatui::backend::TestBackend::new(120, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame, &db)).unwrap();
+
+        assert!(app.tab_regions.iter().map(|&(_, view)| view).eq([
+            View::Overview,
+            View::Measurements,
+            View::References,
+            View::Links,
+        ]));
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(screen.contains(&db.data_for("M003R1").unwrap()[0].to_string()));
+        assert!(screen.contains("1 Overview  2 Meas.  3 Refs  4 Links"));
+
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(&db, key(KeyCode::Char('0'))).unwrap();
+        app.key(&db, key(KeyCode::Char('5'))).unwrap();
+        assert!(matches!(app.detail.as_ref().unwrap().view, View::Overview));
+        app.key(&db, key(KeyCode::Char('2'))).unwrap();
+        assert!(matches!(
+            app.detail.as_ref().unwrap().view,
+            View::Measurements
+        ));
+        app.key(&db, key(KeyCode::Char('3'))).unwrap();
+        assert!(matches!(
+            app.detail.as_ref().unwrap().view,
+            View::References
+        ));
+        app.key(&db, key(KeyCode::Char('4'))).unwrap();
+        assert!(matches!(app.detail.as_ref().unwrap().view, View::Links));
     }
 
     #[test]

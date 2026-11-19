@@ -9,8 +9,8 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style, Stylize},
-    text::Line,
-    widgets::{Block, List, ListItem, ListState, Paragraph},
+    text::{Line, Span, Text},
+    widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use super::Hit;
@@ -29,7 +29,18 @@ pub(super) enum View {
 }
 
 impl View {
-    pub(super) const fn label(self) -> &'static str {
+    const ORDER: [Self; 8] = [
+        Self::Text,
+        Self::Overview,
+        Self::Mass,
+        Self::Decays,
+        Self::Measurements,
+        Self::References,
+        Self::Matches,
+        Self::Links,
+    ];
+
+    const fn label(self) -> &'static str {
         match self {
             Self::Text => "Matched text",
             Self::Overview => "Overview",
@@ -42,17 +53,14 @@ impl View {
         }
     }
 
-    pub(super) const fn from_key(key: char) -> Option<Self> {
-        match key {
-            '0' => Some(Self::Text),
-            '1' => Some(Self::Overview),
-            '2' => Some(Self::Mass),
-            '3' => Some(Self::Decays),
-            '4' => Some(Self::Measurements),
-            '5' => Some(Self::References),
-            '6' => Some(Self::Matches),
-            '7' => Some(Self::Links),
-            _ => None,
+    const fn tab_label(self) -> &'static str {
+        match self {
+            Self::Text => "Text",
+            Self::Measurements => "Meas.",
+            Self::References => "Refs",
+            Self::Matches => "Matches",
+            Self::Links => "Links",
+            _ => self.label(),
         }
     }
 
@@ -67,7 +75,7 @@ impl View {
         }
     }
 
-    pub(super) const fn is_list(self) -> bool {
+    const fn is_list(self) -> bool {
         matches!(self, Self::Matches | Self::Links)
     }
 }
@@ -77,10 +85,12 @@ pub(super) struct Detail {
     particle: Option<ParticleSummary>,
     text: Option<TextSearchResult>,
     matches: EntryList,
-    links: Option<EntryList>,
+    links: EntryList,
+    named_views: Vec<EntryDetailView>,
+    overview: Vec<Line<'static>>,
     pub(super) view: View,
-    pub(super) lines: Vec<Line<'static>>,
-    pub(super) scroll: u16,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
 }
 
 impl Detail {
@@ -128,6 +138,10 @@ impl Detail {
         text: Option<TextSearchResult>,
         matches: EntryList,
     ) -> PdgResult<Self> {
+        let (details, named_views) = db.entry_overview_and_views(&entry)?;
+        let links = linked_entries(db, &entry)?;
+        let mut overview = Vec::new();
+        append_details(&mut overview, &details);
         let view = if !matches.entries.is_empty() {
             View::Matches
         } else if text.is_some() {
@@ -140,7 +154,9 @@ impl Detail {
             particle,
             text,
             matches,
-            links: None,
+            links,
+            named_views,
+            overview,
             view,
             lines: Vec::new(),
             scroll: 0,
@@ -159,18 +175,45 @@ impl Detail {
             .map_or_else(|| self.id(), |particle| particle.name.as_str())
     }
 
-    pub(super) const fn has_text(&self) -> bool {
-        self.text.is_some()
+    pub(super) fn cycle_view(&mut self, db: &Pdg, backwards: bool) -> PdgResult<()> {
+        let views: Vec<_> = self.available_views().collect();
+        let current = views
+            .iter()
+            .position(|&view| view == self.view)
+            .unwrap_or_default();
+        let offset = if backwards { views.len() - 1 } else { 1 };
+        self.load(db, views[(current + offset) % views.len()])
     }
 
-    pub(super) const fn has_matches(&self) -> bool {
-        !self.matches.entries.is_empty()
+    pub(super) fn select_number(&mut self, db: &Pdg, key: char) -> PdgResult<()> {
+        let view = "123456789"
+            .find(key)
+            .and_then(|index| self.available_views().nth(index));
+        if let Some(view) = view {
+            self.load(db, view)?;
+        }
+        Ok(())
+    }
+
+    fn available_views(&self) -> impl Iterator<Item = View> + '_ {
+        View::ORDER.into_iter().filter(|&view| self.has_view(view))
+    }
+
+    fn has_view(&self, view: View) -> bool {
+        match view {
+            View::Text => self.text.is_some(),
+            View::Matches => !self.matches.entries.is_empty(),
+            View::Links => !self.links.entries.is_empty(),
+            _ => view
+                .selection()
+                .is_some_and(|view| self.named_views.contains(&view)),
+        }
     }
 
     pub(super) fn selected_entry(&self) -> Option<&str> {
         let list = match self.view {
             View::Matches => &self.matches,
-            View::Links => self.links.as_ref()?,
+            View::Links => &self.links,
             _ => return None,
         };
         let index = list.state.selected()?;
@@ -180,7 +223,7 @@ impl Detail {
     const fn current_list_mut(&mut self) -> Option<&mut EntryList> {
         match self.view {
             View::Matches => Some(&mut self.matches),
-            View::Links => self.links.as_mut(),
+            View::Links => Some(&mut self.links),
             _ => None,
         }
     }
@@ -201,43 +244,96 @@ impl Detail {
         }
     }
 
-    pub(super) fn draw_list(&mut self, frame: &mut Frame<'_>, area: Rect, accent: Style) {
-        let block = Block::bordered().border_style(accent).title(format!(
-            " {} · {} ",
-            self.id(),
-            self.view.label()
-        ));
+    pub(super) fn draw(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        accent: Style,
+        tabs: &mut Vec<(Rect, View)>,
+    ) -> u16 {
+        let block = Block::bordered()
+            .title(format!(" {} · {} ", self.id(), self.view.label()))
+            .border_style(accent);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let content = self.draw_tabs(frame, inner, accent, tabs);
+        if content.height > 0 {
+            if self.view.is_list() {
+                self.draw_list(frame, content);
+            } else {
+                let paragraph =
+                    Paragraph::new(Text::from(self.lines.clone())).wrap(Wrap { trim: true });
+                let max_scroll = paragraph
+                    .line_count(content.width)
+                    .saturating_sub(usize::from(content.height));
+                self.scroll = self
+                    .scroll
+                    .min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+                frame.render_widget(paragraph.scroll((self.scroll, 0)), content);
+            }
+        }
+        content.height.max(1)
+    }
+
+    fn draw_tabs(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        accent: Style,
+        tabs: &mut Vec<(Rect, View)>,
+    ) -> Rect {
+        let mut x = area.x;
+        let mut y = area.y;
+        for (index, view) in self.available_views().enumerate() {
+            let label = Span::raw(format!("{} {}", index + 1, view.tab_label()));
+            let width = u16::try_from(label.width())
+                .unwrap_or(u16::MAX)
+                .min(area.width);
+            if area.right().saturating_sub(x) < width {
+                x = area.x;
+                y = y.saturating_add(1);
+            }
+            if y >= area.bottom() {
+                break;
+            }
+            let tab = Rect::new(x, y, width, 1);
+            let style = if view == self.view {
+                accent.bold().reversed()
+            } else {
+                Style::new()
+            };
+            frame.render_widget(label.style(style), tab);
+            tabs.push((tab, view));
+            x = tab.right().saturating_add(2);
+        }
+        let top = y.saturating_add(1).min(area.bottom());
+        Rect::new(area.x, top, area.width, area.bottom() - top)
+    }
+
+    fn draw_list(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let Some(list) = self.current_list_mut() else {
             return;
         };
-        if list.entries.is_empty() {
-            frame.render_widget(Paragraph::new("No linked PDG entries.").block(block), area);
-        } else {
-            let items = list.entries.iter().map(|entry| {
-                ListItem::new(entry.relation.map_or_else(
-                    || format!("{}  {}", entry.pdgid, entry.description),
-                    |relation| format!("{}  {relation}  {}", entry.pdgid, entry.description),
-                ))
-            });
-            frame.render_stateful_widget(
-                List::new(items)
-                    .block(block)
-                    .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-                    .highlight_symbol("› "),
-                area,
-                &mut list.state,
-            );
-        }
+        let items = list.entries.iter().map(|entry| {
+            ListItem::new(entry.relation.map_or_else(
+                || format!("{}  {}", entry.pdgid, entry.description),
+                |relation| format!("{}  {relation}  {}", entry.pdgid, entry.description),
+            ))
+        });
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("› "),
+            area,
+            &mut list.state,
+        );
     }
 
     pub(super) fn load(&mut self, db: &Pdg, view: View) -> PdgResult<()> {
+        if !self.has_view(view) {
+            return Ok(());
+        }
         if view.is_list() {
-            if view == View::Matches && !self.has_matches() {
-                return Ok(());
-            }
-            if view == View::Links && self.links.is_none() {
-                self.links = Some(linked_entries(db, &self.entry)?);
-            }
             self.view = view;
             self.lines.clear();
             self.scroll = 0;
@@ -259,9 +355,13 @@ impl Detail {
         }
 
         if let Some(selection) = view.selection() {
-            let details = db.entry_details(&self.entry, selection)?;
             let header_len = lines.len();
-            append_details(&mut lines, &details);
+            if selection == EntryDetailView::Overview {
+                lines.extend(self.overview.iter().cloned());
+            } else {
+                let details = db.entry_details(&self.entry, selection)?;
+                append_details(&mut lines, &details);
+            }
             if lines.len() == header_len {
                 lines.push(Line::default());
                 lines.push(Line::raw("No data for this view."));
@@ -276,8 +376,6 @@ impl Detail {
                 lines.push(Line::default());
             }
             lines.extend(hit.text.lines().map(|line| Line::raw(line.to_owned())));
-        } else {
-            return Ok(());
         }
         self.view = view;
         self.lines = lines;
@@ -313,7 +411,6 @@ impl EntryList {
         let state = ListState::default().with_selected((!entries.is_empty()).then_some(0));
         Self { entries, state }
     }
-
     fn navigate(&mut self, code: KeyCode, page: u16) {
         let Some(last) = self.entries.len().checked_sub(1) else {
             return;

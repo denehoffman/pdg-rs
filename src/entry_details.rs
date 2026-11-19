@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use rusqlite::params_from_iter;
+
 use crate::{
     BranchingFraction, BranchingRatio, DataEntry, DataType, ParticleDetailSelection,
     ParticlePropertyDetail, Pdg, PdgFootnote, PdgId, PdgIdEntry, PdgMeasurement, PdgParticle,
@@ -90,25 +92,13 @@ impl Pdg {
         use EntryDetailView::{Decays, Full, Mass, Measurements, Overview, References};
 
         let id = entry.pdgid.as_str();
-        let particles = if entry.data_type == DataType::Particle {
-            self.entry_particles(id)?
-        } else {
-            Vec::new()
-        };
+        let particles = self.detail_particles(entry)?;
         let particle = particles.first();
         let mut details = EntryDetails::default();
 
         match view {
             Overview | Full { .. } => {
-                if let Some(particle) = particle {
-                    details.properties = particle
-                        .details(ParticleDetailSelection::Overview)?
-                        .properties;
-                }
-                details.content.data = self.data_for(id)?;
-                if particle.is_none() || matches!(view, Full { .. }) {
-                    details.content.texts = self.texts_for(id)?;
-                }
+                details = self.load_entry_overview(entry, particle, matches!(view, Full { .. }))?;
             }
             Mass => {
                 if let Some(particle) = particle {
@@ -127,7 +117,15 @@ impl Pdg {
                 }
             }
             Measurements | References => {
-                let ids = self.evidence_ids(entry, particle)?;
+                let properties = match particle {
+                    Some(particle) => {
+                        particle
+                            .details(ParticleDetailSelection::Overview)?
+                            .properties
+                    }
+                    None => Vec::new(),
+                };
+                let ids = self.evidence_ids(entry, &properties)?;
                 if view == Measurements {
                     for id in ids {
                         details
@@ -168,18 +166,129 @@ impl Pdg {
         Ok(details)
     }
 
-    fn evidence_ids(
+    /// Loads the overview and lists the named views available for browsing the entry.
+    ///
+    /// The list starts with [`EntryDetailView::Overview`], which includes data stored directly
+    /// on the entry, such as a mass value or branching ratio. The Mass and Decays views group
+    /// data for particle entries. Mass and decay availability uses the selected numeric edition.
+    /// Measurements and references use the opened release.
+    ///
+    /// # Errors
+    /// Returns a database error if the overview or view availability cannot be queried.
+    pub fn entry_overview_and_views(
+        &self,
+        entry: &PdgIdEntry,
+    ) -> PdgResult<(EntryDetails<'_>, Vec<EntryDetailView>)> {
+        let particles = self.detail_particles(entry)?;
+        let particle = particles.first();
+        let overview = self.load_entry_overview(entry, particle, false)?;
+        let mut views = vec![EntryDetailView::Overview];
+        if overview
+            .properties
+            .iter()
+            .any(|property| property.data_type == DataType::Mass)
+        {
+            views.push(EntryDetailView::Mass);
+        }
+        if particle.is_some() && self.has_decay_data(&entry.pdgid)? {
+            views.push(EntryDetailView::Decays);
+        }
+        let ids = self.evidence_ids(entry, &overview.properties)?;
+        let (measurements, references) = self.available_evidence(&ids)?;
+        if measurements {
+            views.push(EntryDetailView::Measurements);
+        }
+        if references {
+            views.push(EntryDetailView::References);
+        }
+        Ok((overview, views))
+    }
+
+    fn detail_particles(&self, entry: &PdgIdEntry) -> PdgResult<Vec<PdgParticle<'_>>> {
+        if entry.data_type == DataType::Particle {
+            self.entry_particles(&entry.pdgid)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn load_entry_overview(
         &self,
         entry: &PdgIdEntry,
         particle: Option<&PdgParticle<'_>>,
-    ) -> PdgResult<Vec<PdgId>> {
-        let mut ids = vec![entry.pdgid.clone()];
+        include_particle_text: bool,
+    ) -> PdgResult<EntryDetails<'_>> {
+        let mut details = EntryDetails::default();
         if let Some(particle) = particle {
-            let properties = particle
+            details.properties = particle
                 .details(ParticleDetailSelection::Overview)?
                 .properties;
-            ids.extend(properties.into_iter().map(|property| property.value.pdgid));
-        } else if entry.data_type == DataType::Section {
+        }
+        details.content.data = self.data_for(&entry.pdgid)?;
+        if particle.is_none() || include_particle_text {
+            details.content.texts = self.texts_for(&entry.pdgid)?;
+        }
+        Ok(details)
+    }
+
+    fn has_decay_data(&self, id: &str) -> PdgResult<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT pdgid.data_type
+             FROM pdgid JOIN pdgdata ON pdgdata.pdgid_id = pdgid.id
+             WHERE pdgid.parent_pdgid = ?1 AND pdgdata.edition = ?2
+               AND (pdgid.data_type GLOB 'BF[IX]*' OR pdgid.data_type = ?3)",
+        )?;
+        let mut rows = stmt.query([id, self.edition(), DataType::BranchingRatio.to_code()])?;
+        while let Some(row) = rows.next()? {
+            if row
+                .get::<_, String>(0)?
+                .parse::<DataType>()
+                .is_ok_and(|kind| kind.is_branching_fraction() || kind == DataType::BranchingRatio)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn available_evidence(&self, ids: &[PdgId]) -> PdgResult<(bool, bool)> {
+        let slots = vec!["?"; ids.len()].join(", ");
+        let references = self.conn.query_row(
+            &format!(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pdgmeasurement
+                     JOIN pdgreference ON pdgreference.id = pdgmeasurement.pdgreference_id
+                     WHERE pdgmeasurement.pdgid IN ({slots})
+                 )"
+            ),
+            params_from_iter(ids),
+            |row| row.get::<_, bool>(0),
+        )?;
+        let measurements = references
+            || self.conn.query_row(
+                &format!(
+                    "SELECT EXISTS (
+                     SELECT 1 FROM pdgfootnote WHERE pdgid IN ({slots}) AND trim(text) <> ''
+                 )"
+                ),
+                params_from_iter(ids),
+                |row| row.get::<_, bool>(0),
+            )?;
+        Ok((measurements, references))
+    }
+
+    fn evidence_ids(
+        &self,
+        entry: &PdgIdEntry,
+        properties: &[ParticlePropertyDetail],
+    ) -> PdgResult<Vec<PdgId>> {
+        let mut ids = vec![entry.pdgid.clone()];
+        ids.extend(
+            properties
+                .iter()
+                .map(|property| property.value.pdgid.clone()),
+        );
+        if entry.data_type == DataType::Section {
             ids.extend(
                 self.children_for_pdgid(&entry.pdgid)?
                     .into_iter()
