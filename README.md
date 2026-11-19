@@ -79,15 +79,15 @@ pdg tui f980
 pdg tui --text 'form factors'
 ```
 
-Type to search, press Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. In the detail pane, keys 1 through 5 select overview, mass, decays, measurements, and references. Key 0 returns to the matched passage for a text result. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
+Type to search, press Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. The detail pane numbers the available tabs from left to right starting at 1. Click a tab, press its displayed number, or use Tab and Shift+Tab to switch views. The **Text** tab shows the matched passage for a text result. **Overview** shows the recorded value when you open a specific mass or decay record. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
 
 Press F2 from particle search to edit the filters. Class, particle type, charge, and spin start at **Any**. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
 
 Enter applies the filters together and Esc cancels the edits. Mass ranges in `MeV` and decay products are editable, and blank fields accept any value. You can apply filters with an empty search box, then type a name to narrow the results. The browser remembers the particle filters when you switch to text search.
 
-For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. Key 6 returns to the matching channels from the particle's other detail views.
+For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. The **Matches** tab returns to the matching channels from the particle's other detail views.
 
-Press 7 from a detail view to list the entry's parent, children, and related PDG IDs. Use the arrow keys to select a link and Enter to follow it. Esc retraces your steps one view at a time, restoring each selection and scroll position before returning to the search results.
+Select **Links** from a detail view to list the entry's parent, children, and related PDG IDs. Use the arrow keys to select a link and Enter to follow it. Esc retraces your steps one entry at a time, restoring each view, selection, and scroll position before returning to the search results.
 
 From the results, press F3 to copy the current search as a `pdg find` command for a POSIX shell. The command includes the query, applied filters, database options, and the browser's 50-result limit.
 
