@@ -43,6 +43,7 @@ impl Help {
             binding("↑↓ / PgUp/PgDn", "  Select a result"),
             binding("Enter", "  Open a result"),
             binding("Ctrl+F", "  Open advanced filters in particle search"),
+            binding("Ctrl+O", "  Toggle mass order in particle search"),
             binding("F3", "  Copy the search as a pdg find command"),
             Line::default(),
             Line::raw("Entry details").bold(),

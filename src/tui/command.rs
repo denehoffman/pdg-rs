@@ -1,7 +1,7 @@
 use std::path::{self, PathBuf};
 
 use super::{Mode, RESULT_LIMIT, filters::AppliedFilters};
-use crate::{CliError, CliResult, DatabaseOptions};
+use crate::{CliError, CliResult, DatabaseOptions, ParticleSort};
 
 #[derive(Default)]
 pub(super) struct SearchSource {
@@ -24,6 +24,7 @@ impl SearchSource {
         mode: Mode,
         query: &str,
         filters: Option<&AppliedFilters>,
+        sort: ParticleSort,
     ) -> CliResult<Option<String>> {
         let filters = if mode == Mode::Particles {
             filters
@@ -50,6 +51,9 @@ impl SearchSource {
         push_option(&mut command, "--limit", &RESULT_LIMIT.to_string());
         match mode {
             Mode::Particles => {
+                if sort == ParticleSort::Mass {
+                    push_option(&mut command, "--sort", "mass");
+                }
                 if let Some(edition) = &self.edition {
                     push_option(&mut command, "--edition", edition);
                 }
@@ -106,12 +110,17 @@ mod tests {
         };
         assert_eq!(
             source
-                .find_command(Mode::Text, "form factors", None)
+                .find_command(Mode::Text, "form factors", None, ParticleSort::Mass)
                 .unwrap()
                 .unwrap(),
             "pdg find --limit=50 --text 'form factors'"
         );
-        assert!(source.find_command(Mode::Text, "", None).unwrap().is_none());
+        assert!(
+            source
+                .find_command(Mode::Text, "", None, ParticleSort::Default)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(unix)]
@@ -130,7 +139,7 @@ mod tests {
         };
         let query = "--π (980) 'quoted' \"$HOME\"";
         let command = source
-            .find_command(Mode::Particles, query, None)
+            .find_command(Mode::Particles, query, None, ParticleSort::Mass)
             .unwrap()
             .unwrap();
         let output = Command::new("sh")
@@ -151,5 +160,6 @@ mod tests {
         assert_eq!(find.query.as_deref(), Some(query));
         assert_eq!(find.edition.as_deref(), source.edition.as_deref());
         assert_eq!(find.output.limit, Some(RESULT_LIMIT));
+        assert_eq!(find.sort, Some(ParticleSort::Mass));
     }
 }

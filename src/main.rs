@@ -343,12 +343,24 @@ struct FindCommand {
     /// Use an edition available in this file for numeric properties, such as 2024.
     #[arg(long, conflicts_with = "text")]
     edition: Option<String>,
+    /// Sort particle results before applying the result limit.
+    #[arg(long, value_enum, conflicts_with = "text")]
+    sort: Option<ParticleSort>,
     /// Search query. Particle names support aliases, resonance shorthand, and typos.
     query: Option<String>,
     #[command(flatten, next_help_heading = "Output options")]
     output: SearchOutput,
     #[command(flatten, next_help_heading = "Particle filters")]
     filters: ParticleFilters,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum ParticleSort {
+    /// Keep name relevance or the default order for filter-only results.
+    #[default]
+    Default,
+    /// Order by ascending mass, placing entries without comparable masses last.
+    Mass,
 }
 
 #[derive(Parser)]
@@ -727,6 +739,9 @@ fn run_find(command: &FindCommand, database: &DatabaseOptions) -> CliResult<()> 
         db.search_particle_hits(filters)?
     };
 
+    if command.sort == Some(ParticleSort::Mass) {
+        db.sort_particles_by_mass(&mut hits, |hit| &hit.particle.pdgid)?;
+    }
     let default_limit = query.is_some().then_some(DEFAULT_SEARCH_LIMIT);
     if let Some(limit) = command.output.result_limit(default_limit) {
         hits.truncate(limit);

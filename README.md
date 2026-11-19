@@ -24,6 +24,7 @@ pdg find 'X(3872)'
 pdg find prtoon
 pdg find --class lepton --limit 5
 pdg find --decays-to 'KS,KS' --charge 0
+pdg find --class meson --charge 0 --mass 900..2000 --decays-to KS,KS --sort mass
 pdg find --text 'form factors'
 pdg show 'pi+'
 pdg show f0980
@@ -33,6 +34,8 @@ pdg show M009 --view decays
 pdg show S008245
 ```
 `pdg find` searches particles by default. Use `--text` to search PDG descriptions, text, and footnotes, and add `--show-full-text` to expand the snippets.
+
+Use `--sort mass` to order matching particles by ascending mass in the selected edition before applying the result limit. Bounded mass ranges sort by their midpoint. Entries with only limits or no comparable mass sort last. Without `--sort`, name queries use relevance and filter-only queries use the database listing order.
 
 Use `pdg find --text 'form fact*'` to match a partial term. When a whole-word query finds nothing, `pdg` also tries the last word as a prefix and checks for a likely spelling correction. Results show the source and parent entry, with the correction displayed when one was used.
 
@@ -91,7 +94,7 @@ For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** sel
 
 Select **Links** from a detail view to list the entry's parent, children, and related PDG IDs. Use the arrow keys to select a link and Enter to follow it. Esc retraces your steps one entry at a time, restoring each view, selection, and scroll position before returning to the search results.
 
-From the results, press F3 to copy the current search as a `pdg find` command for a POSIX shell. The command includes the query, applied filters, database options, and the browser's 50-result limit.
+Press Ctrl+O in particle search to toggle mass ordering. The results heading shows **Mass ↑** when it is active. Press F3 to copy the current search as a `pdg find` command for a POSIX shell. The command includes the query, applied filters, sort order, database options, and the browser's 50-result limit.
 
 Press `c` in the detail pane to copy the canonical name when a single particle is selected. Press `i` to copy the PDG ID. Clipboard delivery uses OSC 52 and depends on terminal support. The browser uses the same `--db-path`, `--offline`, and `--edition` options as the CLI queries. The `tui` Cargo feature is enabled by default. To build the binary without the browser, use `--no-default-features --features ratio`.
 
@@ -134,6 +137,8 @@ fn main() -> PdgResult<()> {
 ```
 
 Call `into_owned()` on a ranked or filter search hit to keep its identity, match information, and decay channels after closing the database. For details on a particle, choose which properties to load. The returned record can also outlive the database and serialize with Serde.
+
+To order an existing set of hits, call `pdg.sort_particles_by_mass(&mut hits, |hit| &hit.particle.pdgid)?` before taking the desired number of results.
 
 ```rust,no_run
 use pdg_rs::{DataType, Lookup, LookupSelector, ParticleDetailSelection, Pdg, PdgResult};
