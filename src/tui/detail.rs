@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use super::Hit;
+use super::{Hit, scroll_by_key};
 use crate::footnote_key;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,15 +232,7 @@ impl Detail {
         if let Some(list) = self.current_list_mut() {
             list.navigate(code, page);
         } else {
-            self.scroll = match code {
-                KeyCode::Up => self.scroll.saturating_sub(1),
-                KeyCode::Down => self.scroll.saturating_add(1),
-                KeyCode::PageUp => self.scroll.saturating_sub(page),
-                KeyCode::PageDown => self.scroll.saturating_add(page),
-                KeyCode::Home => 0,
-                KeyCode::End => u16::MAX,
-                _ => return,
-            };
+            self.scroll = scroll_by_key(self.scroll, code, page);
         }
     }
 

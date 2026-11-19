@@ -31,12 +31,26 @@ use crate::{CliError, CliResult, DatabaseOptions, TuiCommand, open_pdg};
 mod command;
 mod detail;
 mod filters;
+mod help;
 use command::SearchSource;
 use detail::{Detail, View};
 use filters::{AppliedFilters, EditorAction, FilterEditor};
+use help::Help;
 
 const RESULT_LIMIT: usize = 50;
 const SEARCH_DELAY: Duration = Duration::from_millis(120);
+
+const fn scroll_by_key(scroll: u16, code: KeyCode, page: u16) -> u16 {
+    match code {
+        KeyCode::Up => scroll.saturating_sub(1),
+        KeyCode::Down => scroll.saturating_add(1),
+        KeyCode::PageUp => scroll.saturating_sub(page),
+        KeyCode::PageDown => scroll.saturating_add(page),
+        KeyCode::Home => 0,
+        KeyCode::End => u16::MAX,
+        _ => scroll,
+    }
+}
 
 pub fn run(command: &TuiCommand, database: &DatabaseOptions) -> CliResult<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -269,6 +283,7 @@ struct App {
     tab_regions: Vec<(Rect, View)>,
     filters: Option<AppliedFilters>,
     filter_editor: Option<FilterEditor>,
+    help: Option<Help>,
     pending: Option<Instant>,
     notice: Option<String>,
     page: u16,
@@ -290,6 +305,7 @@ impl App {
             tab_regions: Vec::new(),
             filters: None,
             filter_editor: None,
+            help: None,
             pending: Some(Instant::now()),
             notice: None,
             page: 1,
@@ -386,6 +402,9 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
+        if self.help.is_some() {
+            return;
+        }
         if let Some(editor) = &mut self.filter_editor {
             editor.paste(text);
         } else if self.input.insert(text) {
@@ -423,7 +442,30 @@ impl App {
         {
             return Ok(Action::Quit);
         }
+        if key.code == KeyCode::Char('f') && key.modifiers == KeyModifiers::CONTROL {
+            if self.mode == Mode::Particles
+                && self.detail.is_none()
+                && self.filter_editor.is_none()
+                && self.help.is_none()
+            {
+                self.notice = None;
+                self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
+            }
+            return Ok(Action::None);
+        }
         if !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) {
+            return Ok(Action::None);
+        }
+        if key.code == KeyCode::Char('?') {
+            self.help = self.help.is_none().then(Help::default);
+            return Ok(Action::None);
+        }
+        if let Some(help) = &mut self.help {
+            if key.code == KeyCode::Esc {
+                self.help = None;
+            } else {
+                help.navigate(key.code);
+            }
             return Ok(Action::None);
         }
         self.notice = None;
@@ -437,6 +479,15 @@ impl App {
                 EditorAction::Apply => Action::ApplyFilters,
             });
         }
+        if key.code == KeyCode::Char('/') {
+            self.detail = None;
+            self.detail_history.clear();
+            return Ok(Action::None);
+        }
+        self.browse_key(db, key)
+    }
+
+    fn browse_key(&mut self, db: &Pdg, key: KeyEvent) -> CliResult<Action> {
         if let Some(detail) = &mut self.detail {
             match key.code {
                 KeyCode::Tab => {
@@ -459,9 +510,6 @@ impl App {
         } else {
             match key.code {
                 KeyCode::Esc => return Ok(Action::Quit),
-                KeyCode::F(2) if self.mode == Mode::Particles => {
-                    self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
-                }
                 KeyCode::F(3) => return Ok(self.copy_search()),
                 KeyCode::Tab => {
                     self.mode = if self.mode == Mode::Particles {
@@ -499,6 +547,7 @@ impl App {
     fn mouse(&mut self, db: &Pdg, mouse: MouseEvent) -> PdgResult<()> {
         let position = Position::new(mouse.column, mouse.row);
         if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.help.is_none()
             && let Some(detail) = &mut self.detail
             && let Some(&(_, view)) = self
                 .tab_regions
@@ -521,6 +570,10 @@ impl App {
                     .wrap(Wrap { trim: true }),
                 area,
             );
+            return;
+        }
+        if let Some(help) = &mut self.help {
+            help.draw(frame, self.accent);
             return;
         }
         let wide = area.width >= 80;
@@ -649,9 +702,10 @@ impl App {
         }
         if let Some(detail) = &self.detail {
             lines.push(Line::from(vec![
-                Span::styled("Tab/Shift+Tab Views", self.accent),
+                Span::styled("? Help  / Search", self.accent),
                 Span::raw("  Esc Back"),
             ]));
+            lines.push(Line::raw("Tab/Shift+Tab Views"));
             let navigation = match detail.view {
                 View::Matches => "↑↓ Select  Enter Open channel",
                 View::Links => "↑↓ Select  Enter Follow link",
@@ -660,12 +714,12 @@ impl App {
             lines.push(Line::raw(format!("{navigation}  c Name  i ID")));
         } else {
             let filters = if self.mode == Mode::Particles {
-                "F2 Filters  "
+                "Ctrl+F Filters  "
             } else {
                 ""
             };
             lines.push(Line::raw(format!(
-                "{filters}F3 Copy search  Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
+                "? Help  {filters}F3 Copy search  Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
             )));
         }
         Paragraph::new(lines).wrap(Wrap { trim: true })
@@ -818,7 +872,8 @@ mod tests {
     fn search_with_kaon_filters(db: &Pdg) -> App {
         let mut app = App::new("", false, SearchSource::default());
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        app.key(db, key(KeyCode::F(2))).unwrap();
+        app.key(db, KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .unwrap();
         app.key(db, key(KeyCode::Char(' '))).unwrap();
         app.key(db, key(KeyCode::End)).unwrap();
         app.key(db, key(KeyCode::Up)).unwrap();
@@ -893,12 +948,20 @@ mod tests {
         app.key(&db, key(KeyCode::Esc)).unwrap();
         assert!(app.detail.is_none());
 
-        app.key(&db, key(KeyCode::F(2))).unwrap();
+        app.key(
+            &db,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
         for _ in 0..4 {
             app.key(&db, key(KeyCode::Tab)).unwrap();
         }
         app.paste("invalid");
         app.apply_filters(&db);
+        assert!(app.filter_editor.as_ref().unwrap().error.is_some());
+        app.key(&db, key(KeyCode::Char('?'))).unwrap();
+        assert!(app.help.is_some());
+        app.key(&db, key(KeyCode::Esc)).unwrap();
         assert!(app.filter_editor.as_ref().unwrap().error.is_some());
         app.key(&db, key(KeyCode::Esc)).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
@@ -1129,6 +1192,49 @@ mod tests {
         ));
         app.key(&db, key(KeyCode::Char('4'))).unwrap();
         assert!(matches!(app.detail.as_ref().unwrap().view, View::Links));
+    }
+
+    #[test]
+    fn help_preserves_detail_navigation_and_slash_focuses_the_search_bar() {
+        let db = test_db();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut app = App::new("f980", false, SearchSource::default());
+        app.search(&db).unwrap();
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        app.key(&db, key(KeyCode::Char('6'))).unwrap();
+        app.key(&db, key(KeyCode::Down)).unwrap();
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003M1");
+
+        app.key(&db, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT))
+            .unwrap();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        let mut screen = |app: &mut App| {
+            terminal.draw(|frame| app.draw(frame, &db)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        };
+        assert!(screen(&mut app).contains("Focus the search bar"));
+        assert!(app.tab_regions.is_empty());
+        app.key(&db, key(KeyCode::End)).unwrap();
+        assert!(screen(&mut app).contains("Ctrl+C"));
+        app.key(&db, key(KeyCode::Esc)).unwrap();
+        assert!(app.help.is_none());
+        assert_eq!(app.detail.as_ref().unwrap().id(), "M003M1");
+
+        app.key(&db, key(KeyCode::Char('/'))).unwrap();
+        assert!(app.detail.is_none());
+        assert!(app.detail_history.is_empty());
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+        assert_eq!(app.input.value(), "f980");
+        app.key(&db, key(KeyCode::Char('x'))).unwrap();
+        assert_eq!(app.input.value(), "f980x");
     }
 
     #[test]
