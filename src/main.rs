@@ -401,7 +401,7 @@ struct ParticleFilters {
     #[arg(long, value_parser = parse_range)]
     mass: Option<(f64, f64)>,
     /// Filter by isospin. The photon matches both 0 and 1.
-    #[arg(long, value_parser = SuggestedValues(parse_isospin_filter, &["0", "1/2", "1", "3/2", "unknown", "missing"]))]
+    #[arg(long, value_parser = SuggestedValues(parse_isospin_filter, ISOSPIN_VALUES))]
     isospin: Option<QuantumArg<Isospin>>,
     /// Filter by G parity.
     #[arg(long, value_parser = SuggestedValues(parse_parity_filter, PARITY_VALUES))]
@@ -548,6 +548,7 @@ enum QuantumArg<T> {
 }
 
 const PARITY_VALUES: &[&str] = &["+", "-", "unknown", "missing"];
+const ISOSPIN_VALUES: &[&str] = &["0", "1/2", "1", "3/2", "unknown", "missing"];
 const CLASS_VALUES: &[&str] = &["gauge-boson", "lepton", "quark", "meson", "baryon"];
 const PARTICLE_TYPE_VALUES: &[&str] = &["particle", "antiparticle", "self-conjugate"];
 const CHARGE_VALUES: &[&str] = &["-2", "-1", "-2/3", "-1/3", "0", "+1/3", "+2/3", "+1", "+2"];
