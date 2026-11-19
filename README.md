@@ -86,11 +86,11 @@ Type to search, press Tab to switch between particle names and PDG text, and use
 
 Press `?` to see keyboard and mouse controls. Close help with `?` or Esc to return to the same screen. Press `/` from an entry to return to the search bar with the current query and filters.
 
-Press Ctrl+F from particle search to open the advanced filters. Class, particle type, charge, and spin start at **Any**. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
+Press Ctrl+F from particle search to open the advanced filters. The form supports all `pdg find` particle filters, including signed MCID, spin, isospin, parity, C-parity, and G-parity. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
 
-Enter applies the filters together and Esc cancels the edits. Mass ranges in `MeV` and decay products are editable, and blank fields accept any value. You can apply filters with an empty search box, then type a name to narrow the results. The browser remembers the particle filters when you switch to text search.
+Enter applies the filters together and Esc cancels the edits. Enter mass and width ranges in `MeV` and lifetime ranges in seconds. Set **No value** to **Keep particle** to include particles without comparable values for those ranges. Enter comma-separated final states in **Products** and initial states in **Decays from**. **Expansion** controls whether the search expands PDG families and aliases or uses literal spellings. You can apply filters with an empty search box, then type a name to narrow the results. The browser remembers the particle filters when you switch to text search.
 
-For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. The **Matches** tab returns to the matching channels from the particle's other detail views.
+**Decays to** requires exactly the listed products in one decay. **Contains** allows extra products in that decay. For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. The **Matches** tab returns to the matching channels from the particle's other detail views.
 
 Select **Links** from a detail view to list the entry's parent, children, and related PDG IDs. Use the arrow keys to select a link and Enter to follow it. Esc retraces your steps one entry at a time, restoring each view, selection, and scroll position before returning to the search results.
 

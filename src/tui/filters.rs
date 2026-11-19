@@ -1,3 +1,4 @@
+use clap::Parser;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pdg_rs::{OwnedParticleFilterHit, ParticleFilterHit, Pdg};
 use ratatui::{
@@ -10,9 +11,8 @@ use ratatui::{
 
 use super::SearchInput;
 use crate::{
-    CHARGE_VALUES, CLASS_VALUES, CliError, CliResult, PARTICLE_TYPE_VALUES, ParticleFilters,
-    SPIN_VALUES, build_query, has_particle_filters, parse_charge, parse_class, parse_particle_type,
-    parse_range, parse_spin_filter,
+    CHARGE_VALUES, CLASS_VALUES, CliError, CliResult, ISOSPIN_VALUES, PARITY_VALUES,
+    PARTICLE_TYPE_VALUES, ParticleFilters, SPIN_VALUES, build_query, has_particle_filters,
 };
 
 pub(super) struct AppliedFilters {
@@ -22,187 +22,161 @@ pub(super) struct AppliedFilters {
 }
 
 impl AppliedFilters {
-    pub(super) fn command_options(&self) -> impl Iterator<Item = (&'static str, &str)> {
-        let draft = &self.draft;
-        let decay = if draft.decay_mode == 0 {
-            "--decays-to"
-        } else {
-            "--decay-contains"
-        };
-        [
-            ("--class", Field::Class.value(draft.class)),
-            ("--type", Field::Type.value(draft.particle_type)),
-            ("--charge", Field::Charge.value(draft.charge)),
-            ("--spin", draft.spin_value()),
-            ("--mass", draft.mass.value()),
-            (decay, draft.products.value()),
-        ]
-        .into_iter()
-        .filter(|(_, value)| !value.is_empty())
+    pub(super) fn command_options(&self) -> impl Iterator<Item = (&'static str, Option<&str>)> {
+        self.draft.command_options()
     }
 }
-#[derive(Clone, Default)]
-struct Draft {
-    class: usize,
-    particle_type: usize,
-    charge: usize,
-    spin: usize,
-    custom_spin: SearchInput,
-    mass: SearchInput,
-    decay_mode: usize,
-    products: SearchInput,
+
+#[derive(Clone)]
+enum Control {
+    Choice(usize),
+    Text(SearchInput),
 }
 
-const CUSTOM_SPIN: usize = SPIN_VALUES.len() + 1;
+#[derive(Clone)]
+struct Draft {
+    controls: [Control; Field::ALL.len()],
+}
+
+impl Default for Draft {
+    fn default() -> Self {
+        Self {
+            controls: Field::ALL.map(|field| {
+                if field.choices().is_empty() {
+                    Control::Text(SearchInput::default())
+                } else {
+                    Control::Choice(0)
+                }
+            }),
+        }
+    }
+}
 
 impl Draft {
     fn particle_filters(&self) -> CliResult<ParticleFilters> {
-        let mut filters = ParticleFilters {
-            class: parse_field("Class", Field::Class.value(self.class), parse_class)?,
-            particle_type: parse_field(
-                "Type",
-                Field::Type.value(self.particle_type),
-                parse_particle_type,
-            )?,
-            charge: parse_field("Charge", Field::Charge.value(self.charge), parse_charge)?,
-            spin: parse_field("Spin", self.spin_value(), parse_spin_filter)?,
-            mass: parse_field("Mass", self.mass.value(), parse_range)?,
-            ..ParticleFilters::default()
-        };
-        if !self.products.value().is_empty() {
-            let states = self
-                .products
-                .value()
-                .split(',')
-                .map(str::trim)
-                .map(str::to_owned)
-                .collect();
-            if self.decay_mode == 0 {
-                filters.decays_to = states;
-            } else {
-                filters.decay_contains = states;
-            }
+        let args = self.command_options().map(|(flag, value)| {
+            value.map_or_else(|| flag.to_owned(), |value| format!("{flag}={value}"))
+        });
+        ParticleFilters::try_parse_from(std::iter::once("pdg find".to_owned()).chain(args)).map_err(
+            |error| {
+                let message = error.to_string();
+                CliError::InvalidArgument(message.lines().next().unwrap_or(&message).to_owned())
+            },
+        )
+    }
+
+    fn value(&self, field: Field) -> &str {
+        match &self.controls[field as usize] {
+            Control::Choice(index) => field.value(*index),
+            Control::Text(input) => input.value(),
         }
-        Ok(filters)
+    }
+
+    fn applied_value(&self, field: Field) -> &str {
+        if field == Field::Spin && self.value(field) == CUSTOM_SPIN {
+            self.value(Field::CustomSpin)
+        } else {
+            self.value(field)
+        }
+    }
+
+    fn command_options(&self) -> impl Iterator<Item = (&'static str, Option<&str>)> {
+        Field::ALL.into_iter().filter_map(|field| {
+            let value = self.applied_value(field);
+            let flag = match field {
+                Field::CustomSpin | Field::DecayMode => return None,
+                Field::IncludeUnknown => {
+                    return (value == KEEP_PARTICLE)
+                        .then_some(("--include-unknown-properties", None));
+                }
+                Field::DecayExpansion if value == "inclusive" => return None,
+                Field::Products if self.value(Field::DecayMode) == "Contains" => "--decay-contains",
+                _ => field.flag(),
+            };
+            (!value.is_empty()).then_some((flag, Some(value)))
+        })
     }
 
     fn summary(&self) -> String {
-        let decay = if self.decay_mode == 0 {
-            "Decays to "
-        } else {
-            "Contains "
-        };
-        [
-            ("", Field::Class.value(self.class), ""),
-            ("", Field::Type.value(self.particle_type), ""),
-            ("Q ", Field::Charge.value(self.charge), ""),
-            ("J ", self.spin_value(), ""),
-            ("", self.mass.value(), " MeV"),
-            (decay, self.products.value(), ""),
-        ]
-        .into_iter()
-        .filter(|(_, value, _)| !value.is_empty())
-        .map(|(label, value, unit)| format!("{label}{value}{unit}"))
-        .collect::<Vec<_>>()
-        .join(" · ")
-    }
-
-    fn spin_value(&self) -> &str {
-        if self.spin == CUSTOM_SPIN {
-            self.custom_spin.value()
-        } else {
-            Field::Spin.value(self.spin)
-        }
-    }
-
-    const fn selection(&self, field: Field) -> Option<usize> {
-        match field {
-            Field::Class => Some(self.class),
-            Field::Type => Some(self.particle_type),
-            Field::Charge => Some(self.charge),
-            Field::Spin => Some(self.spin),
-            Field::DecayMode => Some(self.decay_mode),
-            _ => None,
-        }
-    }
-
-    const fn select(&mut self, field: Field, index: usize) {
-        let selection = match field {
-            Field::Class => &mut self.class,
-            Field::Type => &mut self.particle_type,
-            Field::Charge => &mut self.charge,
-            Field::Spin => &mut self.spin,
-            Field::DecayMode => &mut self.decay_mode,
-            _ => return,
-        };
-        *selection = index;
-    }
-
-    const fn input(&self, field: Field) -> Option<&SearchInput> {
-        match field {
-            Field::CustomSpin => Some(&self.custom_spin),
-            Field::Mass => Some(&self.mass),
-            Field::Products => Some(&self.products),
-            _ => None,
-        }
-    }
-
-    const fn input_mut(&mut self, field: Field) -> Option<&mut SearchInput> {
-        match field {
-            Field::CustomSpin => Some(&mut self.custom_spin),
-            Field::Mass => Some(&mut self.mass),
-            Field::Products => Some(&mut self.products),
-            _ => None,
-        }
+        Field::ALL
+            .into_iter()
+            .filter_map(|field| {
+                let value = self.applied_value(field);
+                if value.is_empty() {
+                    return None;
+                }
+                let text = match field {
+                    Field::Class | Field::Type => value.to_owned(),
+                    Field::Charge => format!("Q {value}"),
+                    Field::Spin => format!("J {value}"),
+                    Field::Isospin => format!("I {value}"),
+                    Field::Parity => format!("P {value}"),
+                    Field::CParity => format!("C {value}"),
+                    Field::GParity => format!("G {value}"),
+                    Field::Mass => format!("{value} MeV"),
+                    Field::Width => format!("Width {value} MeV"),
+                    Field::Lifetime => format!("Lifetime {value} s"),
+                    Field::IncludeUnknown if value == KEEP_PARTICLE => {
+                        "Keep particles with no value".into()
+                    }
+                    Field::Products => format!("{} {value}", self.value(Field::DecayMode)),
+                    Field::DecayExpansion if value == "literal" => "Literal decay names".into(),
+                    Field::Mcid | Field::DecaysFrom => format!("{} {value}", field.label()),
+                    _ => return None,
+                };
+                Some(text)
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 
-fn parse_field<T>(
-    label: &str,
-    value: &str,
-    parse: impl FnOnce(&str) -> Result<T, String>,
-) -> CliResult<Option<T>> {
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        parse(value)
-            .map(Some)
-            .map_err(|error| CliError::InvalidArgument(format!("{label} — {error}")))
-    }
-}
+const CUSTOM_SPIN: &str = "Custom…";
+const KEEP_PARTICLE: &str = "Keep particle";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Class,
     Type,
     Charge,
+    Mcid,
     Spin,
     CustomSpin,
+    Isospin,
+    Parity,
+    CParity,
+    GParity,
     Mass,
+    Width,
+    Lifetime,
+    IncludeUnknown,
     DecayMode,
     Products,
+    DecaysFrom,
+    DecayExpansion,
 }
 
 impl Field {
-    const STANDARD: &[Self] = &[
+    // Each field uses its position in this list to index its control.
+    const ALL: [Self; 18] = [
         Self::Class,
         Self::Type,
         Self::Charge,
-        Self::Spin,
-        Self::Mass,
-        Self::DecayMode,
-        Self::Products,
-    ];
-
-    const WITH_CUSTOM_SPIN: &[Self] = &[
-        Self::Class,
-        Self::Type,
-        Self::Charge,
+        Self::Mcid,
         Self::Spin,
         Self::CustomSpin,
+        Self::Isospin,
+        Self::Parity,
+        Self::CParity,
+        Self::GParity,
         Self::Mass,
+        Self::Width,
+        Self::Lifetime,
+        Self::IncludeUnknown,
         Self::DecayMode,
         Self::Products,
+        Self::DecaysFrom,
+        Self::DecayExpansion,
     ];
 
     const fn label(self) -> &'static str {
@@ -210,18 +184,53 @@ impl Field {
             Self::Class => "Class",
             Self::Type => "Type",
             Self::Charge => "Charge",
+            Self::Mcid => "MCID",
             Self::Spin => "Spin",
             Self::CustomSpin => "Custom spin",
+            Self::Isospin => "Isospin",
+            Self::Parity => "Parity",
+            Self::CParity => "C-parity",
+            Self::GParity => "G-parity",
             Self::Mass => "Mass (MeV)",
+            Self::Width => "Width (MeV)",
+            Self::Lifetime => "Lifetime (s)",
+            Self::IncludeUnknown => "No value",
             Self::DecayMode => "Decay mode",
             Self::Products => "Products",
+            Self::DecaysFrom => "Decays from",
+            Self::DecayExpansion => "Expansion",
+        }
+    }
+
+    const fn flag(self) -> &'static str {
+        match self {
+            Self::Class => "--class",
+            Self::Type => "--type",
+            Self::Charge => "--charge",
+            Self::Mcid => "--mcid",
+            Self::Spin => "--spin",
+            Self::Isospin => "--isospin",
+            Self::Parity => "--parity",
+            Self::CParity => "--c-parity",
+            Self::GParity => "--g-parity",
+            Self::Mass => "--mass",
+            Self::Width => "--width",
+            Self::Lifetime => "--lifetime",
+            Self::Products => "--decays-to",
+            Self::DecaysFrom => "--decays-from",
+            Self::DecayExpansion => "--decay-expansion",
+            Self::CustomSpin | Self::DecayMode | Self::IncludeUnknown => unreachable!(),
         }
     }
 
     const fn placeholder(self) -> &'static str {
         match self {
+            Self::Mcid => "-211",
             Self::Mass => "900..2000",
+            Self::Width => "0..100",
+            Self::Lifetime => "1e-12..1e-6",
             Self::Products => "KS,KS",
+            Self::DecaysFrom => "pi+",
             _ => "",
         }
     }
@@ -232,34 +241,53 @@ impl Field {
             Self::Type => PARTICLE_TYPE_VALUES,
             Self::Charge => CHARGE_VALUES,
             Self::Spin => SPIN_VALUES,
+            Self::Isospin => ISOSPIN_VALUES,
+            Self::Parity | Self::CParity | Self::GParity => PARITY_VALUES,
+            Self::IncludeUnknown => &["Skip particle", KEEP_PARTICLE],
             Self::DecayMode => &["Decays to", "Contains"],
+            Self::DecayExpansion => &["inclusive", "literal"],
             _ => &[],
         }
     }
 
+    const fn has_any(self) -> bool {
+        !matches!(
+            self,
+            Self::DecayMode | Self::DecayExpansion | Self::IncludeUnknown
+        )
+    }
+
     fn choice_count(self) -> usize {
-        self.choices().len()
-            + usize::from(self != Self::DecayMode)
-            + usize::from(self == Self::Spin)
+        self.choices().len() + usize::from(self.has_any()) + usize::from(self == Self::Spin)
     }
 
     fn value(self, index: usize) -> &'static str {
-        if self == Self::Spin && index == CUSTOM_SPIN {
-            return "Custom…";
-        }
-        let index = if self == Self::DecayMode {
-            Some(index)
-        } else {
-            index.checked_sub(1)
+        let Some(index) = index.checked_sub(usize::from(self.has_any())) else {
+            return "";
         };
-        index
-            .and_then(|index| self.choices().get(index).copied())
-            .unwrap_or("")
+        if self == Self::Spin && index == SPIN_VALUES.len() {
+            CUSTOM_SPIN
+        } else {
+            self.choices().get(index).copied().unwrap_or("")
+        }
     }
 
     fn choice_label(self, index: usize) -> &'static str {
         let value = self.value(index);
         if value.is_empty() { "Any" } else { value }
+    }
+
+    fn hint(self, value: &str) -> Option<&'static str> {
+        match (self, value) {
+            (Self::IncludeUnknown, _) => Some("Applies to mass, width, and lifetime ranges."),
+            (Self::DecayMode, "Decays to") => Some("Require exactly these products in one decay."),
+            (Self::DecayMode, "Contains") => Some("Allow extra products in the same decay."),
+            (Self::DecayExpansion, "inclusive") => Some("Resolve aliases and expand PDG families."),
+            (Self::DecayExpansion, "literal") => {
+                Some("Match names exactly as recorded by the PDG.")
+            }
+            _ => None,
+        }
     }
 }
 
@@ -306,13 +334,13 @@ impl FilterEditor {
 
     pub(super) fn key(&mut self, key: KeyEvent) -> EditorAction {
         self.error = None;
-        let field = self.fields()[self.focus];
+        let field = self.focused_field();
         if let Some(menu) = &mut self.menu {
             let index = menu.selected().unwrap_or_default();
             match key.code {
                 KeyCode::Esc => self.menu = None,
                 KeyCode::Enter => {
-                    self.draft.select(field, index);
+                    self.draft.controls[field as usize] = Control::Choice(index);
                     self.menu = None;
                 }
                 KeyCode::Home => menu.select(Some(0)),
@@ -331,52 +359,67 @@ impl FilterEditor {
             }
             KeyCode::BackTab | KeyCode::Up => self.previous_field(),
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.previous_field(),
-            KeyCode::Tab | KeyCode::Down => self.focus = (self.focus + 1) % self.fields().len(),
-            _ => {
-                if let Some(input) = self.draft.input_mut(field) {
+            KeyCode::Tab | KeyCode::Down => {
+                let count = self.fields().count();
+                self.focus = (self.focus + 1) % count;
+            }
+            _ => match &mut self.draft.controls[field as usize] {
+                Control::Text(input) => {
                     input.key(key);
-                } else if let Some(index) = self.draft.selection(field) {
+                }
+                Control::Choice(index) => {
                     let count = field.choice_count();
                     match key.code {
-                        KeyCode::Left => self.draft.select(field, (index + count - 1) % count),
-                        KeyCode::Right => self.draft.select(field, (index + 1) % count),
-                        KeyCode::Home => self.draft.select(field, 0),
-                        KeyCode::End => self.draft.select(field, count - 1),
+                        KeyCode::Left => *index = (*index + count - 1) % count,
+                        KeyCode::Right => *index = (*index + 1) % count,
+                        KeyCode::Home => *index = 0,
+                        KeyCode::End => *index = count - 1,
                         KeyCode::Char(' ') => {
-                            self.menu = Some(ListState::default().with_selected(Some(index)));
+                            self.menu = Some(ListState::default().with_selected(Some(*index)));
                         }
                         _ => {}
                     }
                 }
-            }
+            },
         }
         EditorAction::Continue
     }
 
-    const fn previous_field(&mut self) {
-        let count = self.fields().len();
+    fn previous_field(&mut self) {
+        let count = self.fields().count();
         self.focus = (self.focus + count - 1) % count;
     }
 
-    const fn fields(&self) -> &'static [Field] {
-        if self.draft.spin == CUSTOM_SPIN {
-            Field::WITH_CUSTOM_SPIN
-        } else {
-            Field::STANDARD
-        }
+    fn fields(&self) -> impl Iterator<Item = Field> + use<> {
+        let custom_spin = self.draft.value(Field::Spin) == CUSTOM_SPIN;
+        Field::ALL
+            .into_iter()
+            .filter(move |&field| field != Field::CustomSpin || custom_spin)
+    }
+
+    fn focused_field(&self) -> Field {
+        self.fields()
+            .nth(self.focus)
+            .expect("focused filter field is visible")
     }
 
     pub(super) fn paste(&mut self, text: &str) {
-        if let Some(input) = self.draft.input_mut(self.fields()[self.focus]) {
+        let field = self.focused_field();
+        if let Control::Text(input) = &mut self.draft.controls[field as usize] {
             input.insert(text);
             self.error = None;
         }
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame<'_>, screen: Rect, accent: Style) {
-        let field = self.fields()[self.focus];
+        let field = self.focused_field();
+        let field_count = self.fields().count();
         let width = screen.width.min(64);
-        let height = screen.height.min(if self.menu.is_some() { 23 } else { 15 });
+        let height = screen.height.min(if self.menu.is_some() {
+            23
+        } else {
+            u16::try_from(field_count + 6).unwrap_or(u16::MAX)
+        });
         let area = Rect::new(
             screen.x + (screen.width - width) / 2,
             screen.y + (screen.height - height) / 2,
@@ -384,9 +427,13 @@ impl FilterEditor {
             height,
         );
         let title = if self.menu.is_some() {
-            format!(" Choose {} ", field.label().to_lowercase())
+            if field == Field::IncludeUnknown {
+                " No comparable value ".to_owned()
+            } else {
+                format!(" Choose {} ", field.label().to_lowercase())
+            }
         } else {
-            " Particle filters ".to_owned()
+            format!(" Particle filters · {}/{} ", self.focus + 1, field_count)
         };
         let block = Block::bordered().title(title).border_style(accent);
         let inner = block.inner(area);
@@ -394,9 +441,15 @@ impl FilterEditor {
         frame.render_widget(block, area);
 
         if let Some(menu) = &mut self.menu {
-            let footer = Paragraph::new("↑↓ Select  Enter Choose  Esc Back  ? Help")
-                .style(accent)
-                .wrap(Wrap { trim: true });
+            let hint = field.hint(field.value(menu.selected().unwrap_or_default()));
+            let lines = hint
+                .into_iter()
+                .map(Line::raw)
+                .chain(std::iter::once(Line::styled(
+                    "↑↓ Select  Enter Choose  Esc Back  ? Help",
+                    accent,
+                )));
+            let footer = Paragraph::new(lines.collect::<Vec<_>>()).wrap(Wrap { trim: true });
             let [choices, help] = split_footer(inner, &footer);
             let items =
                 (0..field.choice_count()).map(|index| ListItem::new(field.choice_label(index)));
@@ -418,6 +471,9 @@ impl FilterEditor {
             if let Some(error) = &self.error {
                 lines.push(Line::raw(error.as_str()));
             }
+            if let Some(hint) = field.hint(self.draft.value(field)) {
+                lines.push(Line::raw(hint));
+            }
             lines.push(Line::styled("Tab Next  ←→ Change  Space Choices", accent));
             lines.push(Line::styled("Enter Apply  Esc Cancel  ? Help", accent));
             lines
@@ -429,10 +485,9 @@ impl FilterEditor {
     }
 
     fn draw_fields(&self, frame: &mut Frame<'_>, area: Rect, accent: Style) {
-        let rows = self.fields();
-        let visible = usize::from(area.height).min(rows.len());
+        let visible = usize::from(area.height).min(self.fields().count());
         let first = self.focus.saturating_sub(visible.saturating_sub(1));
-        for (offset, &field) in rows.iter().skip(first).take(visible).enumerate() {
+        for (offset, field) in self.fields().skip(first).take(visible).enumerate() {
             let row = Rect::new(
                 area.x,
                 area.y + u16::try_from(offset).unwrap_or_default(),
@@ -448,18 +503,21 @@ impl FilterEditor {
                 field_label = field_label.style(accent).bold();
             }
             frame.render_widget(field_label, label);
-            if let Some(input) = self.draft.input(field) {
-                input.draw(frame, value, field.placeholder(), focused && !self.applying);
-            } else if let Some(index) = self.draft.selection(field) {
-                let label = Line::raw(field.choice_label(index));
-                frame.render_widget(
-                    if focused {
-                        label.style(accent).bold()
-                    } else {
-                        label
-                    },
-                    value,
-                );
+            match &self.draft.controls[field as usize] {
+                Control::Text(input) => {
+                    input.draw(frame, value, field.placeholder(), focused && !self.applying);
+                }
+                Control::Choice(index) => {
+                    let label = Line::raw(field.choice_label(*index));
+                    frame.render_widget(
+                        if focused {
+                            label.style(accent).bold()
+                        } else {
+                            label
+                        },
+                        value,
+                    );
+                }
             }
         }
     }
@@ -474,10 +532,17 @@ fn split_footer(area: Rect, footer: &Paragraph<'_>) -> [Rect; 2] {
 
 #[cfg(test)]
 mod tests {
-    use pdg_rs::{AngularMomentum, ParticleType};
+    use pdg_rs::{AngularMomentum, Isospin, ParticleType};
 
     use super::*;
     use crate::QuantumArg;
+
+    fn focus(editor: &mut FilterEditor, field: Field) {
+        editor.focus = editor
+            .fields()
+            .position(|candidate| candidate == field)
+            .unwrap();
+    }
 
     #[test]
     fn choosing_a_type_and_spin_uses_the_cli_filter_values() {
@@ -485,8 +550,7 @@ mod tests {
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         editor.key(key(KeyCode::Tab));
         editor.key(key(KeyCode::End));
-        editor.key(key(KeyCode::Tab));
-        editor.key(key(KeyCode::Tab));
+        focus(&mut editor, Field::Spin);
         editor.key(key(KeyCode::Right));
         assert!(matches!(
             editor.draft.particle_filters().unwrap().spin,
@@ -507,8 +571,7 @@ mod tests {
             filters.spin,
             Some(QuantumArg::Value(AngularMomentum::Custom(value))) if value == "2,3"
         ));
-        editor.key(key(KeyCode::Tab));
-        editor.key(key(KeyCode::Tab));
+        focus(&mut editor, Field::DecayMode);
         editor.key(key(KeyCode::Right));
         editor.key(key(KeyCode::Tab));
         editor.paste("pi+,pi0");
@@ -520,10 +583,117 @@ mod tests {
         assert_eq!(
             applied.command_options().collect::<Vec<_>>(),
             [
-                ("--type", "self-conjugate"),
-                ("--spin", "2,3"),
-                ("--decay-contains", "pi+,pi0"),
+                ("--type", Some("self-conjugate")),
+                ("--spin", Some("2,3")),
+                ("--decay-contains", Some("pi+,pi0")),
             ]
+        );
+    }
+
+    #[test]
+    fn missing_value_choices_stay_separate_from_the_label_in_a_narrow_terminal() {
+        let mut editor = FilterEditor::new(None);
+        focus(&mut editor, Field::IncludeUnknown);
+        let backend = ratatui::backend::TestBackend::new(30, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        for choice in ["Skip particle", KEEP_PARTICLE] {
+            terminal
+                .draw(|frame| editor.draw(frame, frame.area(), Style::new()))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(screen.contains(&format!("No value    {choice}")));
+            editor.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn decay_choice_hints_follow_the_highlighted_option() {
+        let mut editor = FilterEditor::new(None);
+        let backend = ratatui::backend::TestBackend::new(64, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut screen = |editor: &mut FilterEditor| {
+            terminal
+                .draw(|frame| editor.draw(frame, frame.area(), Style::new()))
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        };
+        for (field, first, second) in [
+            (
+                Field::DecayMode,
+                "Require exactly these products in one decay.",
+                "Allow extra products in the same decay.",
+            ),
+            (
+                Field::DecayExpansion,
+                "Resolve aliases and expand PDG families.",
+                "Match names exactly as recorded by the PDG.",
+            ),
+        ] {
+            focus(&mut editor, field);
+            assert!(screen(&mut editor).contains(first));
+            editor.key(key(KeyCode::Char(' ')));
+            assert!(screen(&mut editor).contains(first));
+            editor.key(key(KeyCode::Down));
+            assert!(screen(&mut editor).contains(second));
+            editor.key(key(KeyCode::Enter));
+            assert!(screen(&mut editor).contains(second));
+        }
+    }
+
+    #[test]
+    fn additional_controls_use_the_cli_values_and_boolean_flag() {
+        let mut editor = FilterEditor::new(None);
+        for (field, input) in [
+            (Field::Mcid, "-211"),
+            (Field::Width, "0..100"),
+            (Field::Lifetime, "1e-12..1e-6"),
+            (Field::DecaysFrom, "pi+,pi0"),
+        ] {
+            focus(&mut editor, field);
+            editor.paste(input);
+        }
+        for (field, key) in [
+            (Field::Isospin, KeyCode::Right),
+            (Field::GParity, KeyCode::End),
+            (Field::IncludeUnknown, KeyCode::Right),
+            (Field::DecayExpansion, KeyCode::Right),
+        ] {
+            focus(&mut editor, field);
+            editor.key(KeyEvent::new(key, KeyModifiers::NONE));
+        }
+        let filters = editor.draft.particle_filters().unwrap();
+        assert_eq!(filters.mcid, Some(-211));
+        assert!(matches!(
+            filters.isospin,
+            Some(QuantumArg::Value(Isospin::I0))
+        ));
+        assert!(matches!(filters.g_parity, Some(QuantumArg::Missing)));
+        assert_eq!(filters.width, Some((0.0, 100.0)));
+        assert_eq!(filters.lifetime, Some((1e-12, 1e-6)));
+        assert!(filters.include_unknown_properties);
+        assert!(matches!(
+            filters.decay_expansion,
+            crate::DecayExpansionArg::Literal
+        ));
+        assert_eq!(filters.decays_from, ["pi+", "pi0"]);
+        assert!(
+            editor
+                .draft
+                .command_options()
+                .any(|option| option == ("--include-unknown-properties", None))
         );
     }
 }

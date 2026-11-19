@@ -59,7 +59,12 @@ impl SearchSource {
                 }
                 if let Some(filters) = filters {
                     for (flag, value) in filters.command_options() {
-                        push_option(&mut command, flag, value);
+                        if let Some(value) = value {
+                            push_option(&mut command, flag, value);
+                        } else {
+                            command.push(' ');
+                            command.push_str(flag);
+                        }
                     }
                 }
             }

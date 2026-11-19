@@ -935,11 +935,13 @@ mod tests {
         for _ in 0..5 {
             app.key(db, key(KeyCode::Right)).unwrap();
         }
-        app.key(db, key(KeyCode::Tab)).unwrap();
-        app.key(db, key(KeyCode::Tab)).unwrap();
+        for _ in 0..7 {
+            app.key(db, key(KeyCode::Tab)).unwrap();
+        }
         app.paste("900..2000");
-        app.key(db, key(KeyCode::Tab)).unwrap();
-        app.key(db, key(KeyCode::Tab)).unwrap();
+        for _ in 0..5 {
+            app.key(db, key(KeyCode::Tab)).unwrap();
+        }
         app.paste("KS,KS");
         assert!(matches!(
             app.key(db, key(KeyCode::Enter)).unwrap(),
@@ -1002,7 +1004,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
         )
         .unwrap();
-        for _ in 0..4 {
+        for _ in 0..9 {
             app.key(&db, key(KeyCode::Tab)).unwrap();
         }
         app.paste("invalid");
@@ -1024,6 +1026,51 @@ mod tests {
         app.key(&db, key(KeyCode::Tab)).unwrap();
         app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+    }
+
+    #[test]
+    fn parity_filters_apply_to_particle_names_and_copy_as_cli_options() {
+        let db = test_db();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut app = App::new("pi", false, SearchSource::default());
+        app.search(&db).unwrap();
+        app.key(
+            &db,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        for _ in 0..6 {
+            app.key(&db, key(KeyCode::Tab)).unwrap();
+        }
+        app.key(&db, key(KeyCode::Right)).unwrap();
+        app.key(&db, key(KeyCode::Right)).unwrap();
+        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.key(&db, key(KeyCode::Right)).unwrap();
+        assert!(matches!(
+            app.key(&db, key(KeyCode::Enter)).unwrap(),
+            Action::ApplyFilters
+        ));
+        app.apply_filters(&db);
+        let cli = db
+            .find_particles(
+                "pi",
+                ParticleSearchQuery::new()
+                    .parity(pdg_rs::Parity::Minus)
+                    .charge_conjugation(pdg_rs::Parity::Plus),
+            )
+            .unwrap();
+        assert!(!cli.is_empty());
+        assert!(
+            app.hits.iter().map(Hit::pdgid).eq(cli
+                .iter()
+                .take(RESULT_LIMIT)
+                .map(|hit| hit.particle.pdgid.as_str()))
+        );
+        assert!(matches!(
+            app.key(&db, key(KeyCode::F(3))).unwrap(),
+            Action::Copy { value, .. }
+                if value == "pdg find --limit=50 --parity=- --c-parity=+ pi"
+        ));
     }
 
     #[test]
