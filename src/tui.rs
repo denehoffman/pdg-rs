@@ -26,7 +26,7 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::{CliError, CliResult, DatabaseOptions, TuiCommand, open_pdg};
+use crate::{CliError, CliResult, DatabaseOptions, ParticleSort, TuiCommand, open_pdg};
 
 mod command;
 mod detail;
@@ -157,20 +157,26 @@ struct ParticleHit {
     matching_decays: Vec<OwnedDecayChannelMatch>,
 }
 
-fn particle_hits(db: &Pdg, name: &str, filters: Option<&AppliedFilters>) -> PdgResult<Vec<Hit>> {
+fn particle_hits(
+    db: &Pdg,
+    name: &str,
+    filters: Option<&AppliedFilters>,
+    sort: ParticleSort,
+) -> PdgResult<Vec<Hit>> {
     if name.is_empty() {
-        return Ok(filters
-            .into_iter()
-            .flat_map(|filters| &filters.hits)
-            .take(RESULT_LIMIT)
-            .map(|hit| {
-                Hit::Particle(ParticleHit {
-                    particle: hit.particle.clone(),
-                    matched_name: None,
-                    matching_decays: hit.matching_decays.clone(),
+        let hits = filters.into_iter().flat_map(|filters| &filters.hits);
+        return Ok(
+            limit_particle_results(db, hits, sort, |hit| &hit.particle.pdgid)?
+                .into_iter()
+                .map(|hit| {
+                    Hit::Particle(ParticleHit {
+                        particle: hit.particle.clone(),
+                        matched_name: None,
+                        matching_decays: hit.matching_decays.clone(),
+                    })
                 })
-            })
-            .collect());
+                .collect(),
+        );
     }
 
     // The physics query is independent of name rank. Intersect the ranked results
@@ -179,10 +185,10 @@ fn particle_hits(db: &Pdg, name: &str, filters: Option<&AppliedFilters>) -> PdgR
         filters
             .hits
             .iter()
-            .map(|hit| (particle_key(&hit.particle), &hit.matching_decays))
+            .map(|hit| (particle_key(&hit.particle), hit.matching_decays.as_slice()))
             .collect::<HashMap<_, _>>()
     });
-    Ok(db
+    let hits = db
         .find_particles(name, ParticleSearchQuery::new())?
         .into_iter()
         .filter_map(|hit| {
@@ -193,18 +199,39 @@ fn particle_hits(db: &Pdg, name: &str, filters: Option<&AppliedFilters>) -> PdgR
                         hit.particle.name.as_str(),
                         hit.particle.mcid,
                     ))
-                    .copied()?
-                    .clone(),
-                None => Vec::new(),
+                    .copied()?,
+                None => &[],
             };
-            Some(Hit::Particle(ParticleHit {
-                particle: ParticleSummary::from(&hit.particle),
-                matched_name: Some(hit.matched_name),
-                matching_decays,
-            }))
-        })
-        .take(RESULT_LIMIT)
-        .collect())
+            Some((hit, matching_decays))
+        });
+    Ok(
+        limit_particle_results(db, hits, sort, |(hit, _)| &hit.particle.pdgid)?
+            .into_iter()
+            .map(|(hit, matching_decays)| {
+                Hit::Particle(ParticleHit {
+                    particle: ParticleSummary::from(&hit.particle),
+                    matched_name: Some(hit.matched_name),
+                    matching_decays: matching_decays.to_vec(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn limit_particle_results<T>(
+    db: &Pdg,
+    hits: impl Iterator<Item = T>,
+    sort: ParticleSort,
+    pdgid: impl Fn(&T) -> &str,
+) -> PdgResult<Vec<T>> {
+    if sort == ParticleSort::Mass {
+        let mut hits: Vec<_> = hits.collect();
+        db.sort_particles_by_mass(&mut hits, pdgid)?;
+        hits.truncate(RESULT_LIMIT);
+        Ok(hits)
+    } else {
+        Ok(hits.take(RESULT_LIMIT).collect())
+    }
 }
 
 fn particle_key(particle: &ParticleSummary) -> (&str, &str, Option<isize>) {
@@ -275,6 +302,7 @@ impl Mode {
 struct App {
     input: SearchInput,
     mode: Mode,
+    sort: ParticleSort,
     source: SearchSource,
     hits: Vec<Hit>,
     results: ListState,
@@ -297,6 +325,7 @@ impl App {
         Self {
             input,
             mode: if text { Mode::Text } else { Mode::Particles },
+            sort: ParticleSort::default(),
             source,
             hits: Vec::new(),
             results: ListState::default(),
@@ -333,7 +362,7 @@ impl App {
         self.pending = None;
         let name = self.input.value();
         let hits = match self.mode {
-            Mode::Particles => particle_hits(db, name, self.filters.as_ref())?,
+            Mode::Particles => particle_hits(db, name, self.filters.as_ref(), self.sort)?,
             Mode::Text if name.is_empty() => Vec::new(),
             Mode::Text => db
                 .search_text_with_limit(name, Some(RESULT_LIMIT))?
@@ -364,7 +393,7 @@ impl App {
             return;
         };
         let result = editor.apply(db).and_then(|filters| {
-            let hits = particle_hits(db, self.input.value(), filters.as_ref())?;
+            let hits = particle_hits(db, self.input.value(), filters.as_ref(), self.sort)?;
             Ok((filters, hits))
         });
         match result {
@@ -413,10 +442,12 @@ impl App {
     }
 
     fn copy_search(&mut self) -> Action {
-        match self
-            .source
-            .find_command(self.mode, self.input.value(), self.filters.as_ref())
-        {
+        match self.source.find_command(
+            self.mode,
+            self.input.value(),
+            self.filters.as_ref(),
+            self.sort,
+        ) {
             Ok(Some(value)) => Action::Copy {
                 value,
                 notice: "Sent the find command to the terminal clipboard.".into(),
@@ -442,16 +473,29 @@ impl App {
         {
             return Ok(Action::Quit);
         }
-        if key.code == KeyCode::Char('f') && key.modifiers == KeyModifiers::CONTROL {
-            if self.mode == Mode::Particles
-                && self.detail.is_none()
-                && self.filter_editor.is_none()
-                && self.help.is_none()
-            {
-                self.notice = None;
-                self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
+        if key.modifiers == KeyModifiers::CONTROL
+            && self.mode == Mode::Particles
+            && self.detail.is_none()
+            && self.filter_editor.is_none()
+            && self.help.is_none()
+        {
+            match key.code {
+                KeyCode::Char('f') => {
+                    self.notice = None;
+                    self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
+                    return Ok(Action::None);
+                }
+                KeyCode::Char('o') => {
+                    self.notice = None;
+                    self.sort = match self.sort {
+                        ParticleSort::Default => ParticleSort::Mass,
+                        ParticleSort::Mass => ParticleSort::Default,
+                    };
+                    self.search(db)?;
+                    return Ok(Action::None);
+                }
+                _ => {}
             }
-            return Ok(Action::None);
         }
         if !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) {
             return Ok(Action::None);
@@ -660,7 +704,12 @@ impl App {
     }
 
     fn draw_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let block = Block::bordered().title(format!(" Results · {} ", self.hits.len()));
+        let order = if self.mode == Mode::Particles && self.sort == ParticleSort::Mass {
+            " · Mass ↑"
+        } else {
+            ""
+        };
+        let block = Block::bordered().title(format!(" Results · {}{order} ", self.hits.len()));
         let items = self.hits.iter().map(|hit| {
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{}  ", hit.pdgid()), self.accent),
@@ -713,13 +762,13 @@ impl App {
             };
             lines.push(Line::raw(format!("{navigation}  c Name  i ID")));
         } else {
-            let filters = if self.mode == Mode::Particles {
-                "Ctrl+F Filters  "
+            let particle_controls = if self.mode == Mode::Particles {
+                "Ctrl+F Filters  Ctrl+O Sort  "
             } else {
                 ""
             };
             lines.push(Line::raw(format!(
-                "? Help  {filters}F3 Copy search  Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
+                "? Help  {particle_controls}F3 Copy search  Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
             )));
         }
         Paragraph::new(lines).wrap(Wrap { trim: true })
@@ -975,6 +1024,35 @@ mod tests {
         app.key(&db, key(KeyCode::Tab)).unwrap();
         app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+    }
+
+    #[test]
+    fn mass_order_sorts_filtered_results_and_exports_the_selection() {
+        let db = test_db();
+        let mut app = search_with_kaon_filters(&db);
+        let sort = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let copy = KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE);
+        assert_eq!(app.hits.first().map(Hit::pdgid), Some("M003"));
+
+        app.key(&db, sort).unwrap();
+        assert_eq!(app.hits.first().map(Hit::pdgid), Some("M036"));
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+        assert!(
+            matches!(app.key(&db, copy).unwrap(), Action::Copy { value, .. }
+                if value == "pdg find --limit=50 --sort=mass --class=meson --charge=0 --mass=900..2000 --decays-to=KS,KS"
+            )
+        );
+        app.paste("980");
+        app.search(&db).unwrap();
+        assert_eq!(app.hits.first().map(Hit::pdgid), Some("M036"));
+
+        app.key(&db, sort).unwrap();
+        assert_eq!(app.hits.first().map(Hit::pdgid), Some("M003"));
+        assert!(
+            matches!(app.key(&db, copy).unwrap(), Action::Copy { value, .. }
+                if !value.contains("--sort")
+            )
+        );
     }
 
     #[test]

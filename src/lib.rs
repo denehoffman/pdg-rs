@@ -2,7 +2,10 @@
 #![warn(missing_docs)]
 #![allow(clippy::empty_docs)]
 #![doc = ""]
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use thiserror::Error;
@@ -550,6 +553,40 @@ impl Pdg {
         }
 
         Ok(filtered_particles)
+    }
+
+    /// Sorts particle results by ascending mass in the selected numeric edition.
+    ///
+    /// Pass a function that extracts the particle's PDG ID from each result.
+    /// Sorting uses the first comparable mass in PDG row order, preferring
+    /// direct records and summary rows as in property range searches. A bounded
+    /// range sorts by its midpoint. Entries with only limits or missing masses
+    /// go last. Ties keep their input order.
+    ///
+    /// # Errors
+    /// Returns a database error if the mass data cannot be loaded.
+    pub fn sort_particles_by_mass<T>(
+        &self,
+        hits: &mut [T],
+        pdgid: impl Fn(&T) -> &str,
+    ) -> PdgResult<()> {
+        if hits.len() < 2 {
+            return Ok(());
+        }
+        let masses: HashMap<_, _> = self
+            .property_entries_by_parent(DataType::Mass)?
+            .into_iter()
+            .filter_map(|(id, entries)| {
+                let (_, mass) = entries
+                    .iter()
+                    .filter_map(|entry| Some((entry, comparable_mass_mev(entry)?)))
+                    .min_by_key(|(entry, _)| (entry.sort, entry.pdgid.as_str()))?;
+                Some((id, mass))
+            })
+            .collect();
+        let key = |hit: &T| masses.get(pdgid(hit)).copied().unwrap_or(f64::INFINITY);
+        hits.sort_by(|left, right| key(left).total_cmp(&key(right)));
+        Ok(())
     }
 
     /// Looks up a PDG item by name.
@@ -1186,6 +1223,20 @@ fn data_interval(entry: &DataEntry, unit: Unit) -> Option<Interval> {
             })
         }
     }
+}
+
+fn comparable_mass_mev(entry: &DataEntry<'_>) -> Option<f64> {
+    let mass = match entry.limit_type {
+        None if !matches!(entry.value_type, ValueType::BestLimit | ValueType::PdgLimit) => {
+            entry.value? * unit_factor(&entry.unit_text, Unit::Mev)?
+        }
+        Some(LimitType::Range) => {
+            let interval = data_interval(entry, Unit::Mev)?;
+            interval.min.midpoint(interval.max)
+        }
+        _ => return None,
+    };
+    mass.is_finite().then_some(mass)
 }
 
 fn parse_interval(entry: &DataEntry) -> Option<Interval> {

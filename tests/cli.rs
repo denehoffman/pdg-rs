@@ -539,6 +539,42 @@ fn find_particles_accepts_decay_filters() {
 }
 
 #[test]
+fn mass_order_applies_before_the_limit_and_preserves_decay_matches() {
+    for name_query in [None, Some("980")] {
+        let mut cmd = pdg_command();
+        cmd.args([
+            "find",
+            "--class",
+            "meson",
+            "--charge",
+            "0",
+            "--mass",
+            "900..2000",
+            "--decays-to",
+            "KS,KS",
+            "--sort",
+            "mass",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ]);
+        cmd.args(name_query);
+        let result = cmd.assert().success();
+        let hits: Vec<serde_json::Value> =
+            serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["name"], "a_0(980)0");
+        assert!(!hits[0]["matching_decays"].as_array().unwrap().is_empty());
+    }
+    pdg_command()
+        .args(["find", "--text", "form factors", "--sort", "mass"])
+        .assert()
+        .code(2)
+        .stderr(contains("--sort").and(contains("--text")));
+}
+
+#[test]
 fn find_decay_filters_accept_neutral_kaon_aliases() {
     let query = |final_state: &str| {
         pdg_command()
