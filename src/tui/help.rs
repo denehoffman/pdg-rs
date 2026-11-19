@@ -57,6 +57,7 @@ impl Help {
             Line::raw("Advanced filters").bold(),
             binding("Tab / Shift+Tab", "  Move between fields"),
             binding("←→ / Space", "  Change a choice or open the list"),
+            binding("↓ and Enter", "  Highlight and fill a decay suggestion"),
             binding("Enter", "  Choose an option or apply filters"),
             binding("Esc", "  Close the list or cancel edits"),
             Line::default(),

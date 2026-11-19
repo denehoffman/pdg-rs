@@ -24,7 +24,9 @@ pub use models::*;
 pub use particle_details::{
     DataValue, ParticleDetailSelection, ParticleDetails, ParticlePropertyDetail, ParticleSummary,
 };
-pub use particle_search::{OwnedParticleSearchHit, ParticleMatchKind, ParticleSearchHit};
+pub use particle_search::{
+    DecayStateSide, OwnedParticleSearchHit, ParticleMatchKind, ParticleSearchHit,
+};
 
 /// The edition of the pinned default download. Use [`Pdg::edition`] for an opened database.
 pub const LATEST_EDITION: &str = "2026";
@@ -1323,6 +1325,42 @@ mod tests {
 
     fn test_pdg() -> Pdg {
         Pdg::open_path(TEST_DB_PATH).unwrap()
+    }
+
+    #[test]
+    fn decay_suggestions_resolve_aliases_or_use_recorded_names_by_side() {
+        let db = test_pdg();
+        let inclusive = db
+            .suggest_decay_states(
+                "KS",
+                DecayStateSide::Final,
+                DecayStateExpansion::Inclusive,
+                1,
+            )
+            .unwrap();
+        assert_eq!(inclusive, ["K(S)0"]);
+        let group = db
+            .suggest_decay_states(
+                "f980",
+                DecayStateSide::Final,
+                DecayStateExpansion::Inclusive,
+                1,
+            )
+            .unwrap();
+        assert_eq!(group, ["f_0(980)"]);
+        let literal = db
+            .suggest_decay_states("KS", DecayStateSide::Final, DecayStateExpansion::Literal, 1)
+            .unwrap();
+        assert_eq!(literal, ["KS"]);
+        let incoming = db
+            .suggest_decay_states(
+                "KS",
+                DecayStateSide::Initial,
+                DecayStateExpansion::Literal,
+                8,
+            )
+            .unwrap();
+        assert!(!incoming.iter().any(|name| name == "KS"));
     }
 
     #[test]

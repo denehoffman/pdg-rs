@@ -124,7 +124,7 @@ fn drive(terminal: &mut DefaultTerminal, app: &mut App, db: &Pdg) -> CliResult<(
                 }
             }
             Event::Mouse(mouse) => app.mouse(db, mouse)?,
-            Event::Paste(text) if app.detail.is_none() => app.paste(&text),
+            Event::Paste(text) if app.detail.is_none() => app.paste(db, &text),
             _ => {}
         }
     }
@@ -430,12 +430,12 @@ impl App {
         }
     }
 
-    fn paste(&mut self, text: &str) {
+    fn paste(&mut self, db: &Pdg, text: &str) {
         if self.help.is_some() {
             return;
         }
         if let Some(editor) = &mut self.filter_editor {
-            editor.paste(text);
+            editor.paste(db, text);
         } else if self.input.insert(text) {
             self.schedule_search();
         }
@@ -514,7 +514,7 @@ impl App {
         }
         self.notice = None;
         if let Some(editor) = &mut self.filter_editor {
-            return Ok(match editor.key(key) {
+            return Ok(match editor.key(db, key) {
                 EditorAction::Continue => Action::None,
                 EditorAction::Cancel => {
                     self.filter_editor = None;
@@ -889,7 +889,7 @@ impl SearchInput {
 mod tests {
     use super::*;
 
-    fn test_db() -> Pdg {
+    pub(super) fn test_db() -> Pdg {
         Pdg::open_path(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/data/pdgall-2025-v0.2.2.sqlite",
@@ -938,11 +938,11 @@ mod tests {
         for _ in 0..7 {
             app.key(db, key(KeyCode::Tab)).unwrap();
         }
-        app.paste("900..2000");
+        app.paste(db, "900..2000");
         for _ in 0..5 {
             app.key(db, key(KeyCode::Tab)).unwrap();
         }
-        app.paste("KS,KS");
+        app.paste(db, "KS,KS");
         assert!(matches!(
             app.key(db, key(KeyCode::Enter)).unwrap(),
             Action::ApplyFilters
@@ -965,7 +965,7 @@ mod tests {
                 if value == "pdg find --limit=50 --class=meson --charge=0 --mass=900..2000 --decays-to=KS,KS"
         ));
 
-        app.paste("f980");
+        app.paste(&db, "f980");
         app.search(&db).unwrap();
         let cli = db
             .find_particles(
@@ -1007,7 +1007,7 @@ mod tests {
         for _ in 0..9 {
             app.key(&db, key(KeyCode::Tab)).unwrap();
         }
-        app.paste("invalid");
+        app.paste(&db, "invalid");
         app.apply_filters(&db);
         assert!(app.filter_editor.as_ref().unwrap().error.is_some());
         app.key(&db, key(KeyCode::Char('?'))).unwrap();
@@ -1089,7 +1089,7 @@ mod tests {
                 if value == "pdg find --limit=50 --sort=mass --class=meson --charge=0 --mass=900..2000 --decays-to=KS,KS"
             )
         );
-        app.paste("980");
+        app.paste(&db, "980");
         app.search(&db).unwrap();
         assert_eq!(app.hits.first().map(Hit::pdgid), Some("M036"));
 
@@ -1107,7 +1107,7 @@ mod tests {
         let db = test_db();
         let mut app = search_with_kaon_filters(&db);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        app.paste("f980");
+        app.paste(&db, "f980");
         app.search(&db).unwrap();
         app.key(&db, key(KeyCode::Enter)).unwrap();
         app.key(&db, key(KeyCode::Enter)).unwrap();

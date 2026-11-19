@@ -92,6 +92,8 @@ Enter applies the filters together and Esc cancels the edits. Enter mass and wid
 
 **Decays to** requires exactly the listed products in one decay. **Contains** allows extra products in that decay. For example, enter `meson`, `0`, `900..2000`, and `KS,KS` with **Decays to** selected. Opening a result shows its matching channels with the recorded PDG descriptions. Select a channel and press Enter to open that listing. The **Matches** tab returns to the matching channels from the particle's other detail views.
 
+**Products** and **Decays from** suggest names as you type. Press Down to highlight a suggestion and Enter to replace the entry under the cursor. Enter applies the filters when no suggestion is highlighted. Esc hides the suggestions. Literal expansion suggests spellings recorded on that side of a decay.
+
 Select **Links** from a detail view to list the entry's parent, children, and related PDG IDs. Use the arrow keys to select a link and Enter to follow it. Esc retraces your steps one entry at a time, restoring each view, selection, and scroll position before returning to the search results.
 
 Press Ctrl+O in particle search to toggle mass ordering. The results heading shows **Mass ↑** when it is active. Press F3 to copy the current search as a `pdg find` command for a POSIX shell. The command includes the query, applied filters, sort order, database options, and the browser's 50-result limit.
