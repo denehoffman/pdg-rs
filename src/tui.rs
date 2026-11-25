@@ -23,7 +23,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{CliError, CliResult, DatabaseOptions, ParticleSort, TuiCommand, open_pdg};
@@ -32,10 +32,12 @@ mod command;
 mod detail;
 mod filters;
 mod help;
+mod query;
 use command::SearchSource;
 use detail::{Detail, View};
 use filters::{AppliedFilters, EditorAction, FilterEditor};
 use help::Help;
+use query::{Completions, InlineQuery, format_query, quote_name};
 
 const RESULT_LIMIT: usize = 50;
 const SEARCH_DELAY: Duration = Duration::from_millis(120);
@@ -301,6 +303,7 @@ impl Mode {
 
 struct App {
     input: SearchInput,
+    other_input: Option<SearchInput>,
     mode: Mode,
     sort: ParticleSort,
     source: SearchSource,
@@ -311,9 +314,11 @@ struct App {
     tab_regions: Vec<(Rect, View)>,
     filters: Option<AppliedFilters>,
     filter_editor: Option<FilterEditor>,
+    completion: Option<(Completions, ListState)>,
     help: Option<Help>,
     pending: Option<Instant>,
     notice: Option<String>,
+    search_error: Option<String>,
     page: u16,
     accent: Style,
 }
@@ -324,6 +329,7 @@ impl App {
         input.insert(query);
         Self {
             input,
+            other_input: None,
             mode: if text { Mode::Text } else { Mode::Particles },
             sort: ParticleSort::default(),
             source,
@@ -334,9 +340,11 @@ impl App {
             tab_regions: Vec::new(),
             filters: None,
             filter_editor: None,
+            completion: None,
             help: None,
             pending: Some(Instant::now()),
             notice: None,
+            search_error: None,
             page: 1,
             accent: if env::var_os("NO_COLOR").is_some() {
                 Style::new()
@@ -353,19 +361,41 @@ impl App {
 
     fn schedule_search(&mut self) {
         self.pending = Some(Instant::now() + SEARCH_DELAY);
-        self.hits.clear();
-        self.results = ListState::default();
         self.notice = None;
+        self.search_error = None;
     }
 
     fn search(&mut self, db: &Pdg) -> CliResult<()> {
         self.pending = None;
-        let name = self.input.value();
+        self.search_error = None;
         let hits = match self.mode {
-            Mode::Particles => particle_hits(db, name, self.filters.as_ref(), self.sort)?,
-            Mode::Text if name.is_empty() => Vec::new(),
+            Mode::Particles => {
+                let result = InlineQuery::parse(self.input.value()).and_then(|query| {
+                    if !self
+                        .filters
+                        .as_ref()
+                        .is_some_and(|filters| filters.matches(&query.draft))
+                    {
+                        self.filters = query.draft.apply(db)?;
+                    }
+                    Ok(particle_hits(
+                        db,
+                        &query.name,
+                        self.filters.as_ref(),
+                        self.sort,
+                    )?)
+                });
+                match result {
+                    Ok(hits) => hits,
+                    Err(error) => {
+                        self.search_error = Some(error.to_string());
+                        return Ok(());
+                    }
+                }
+            }
+            Mode::Text if self.input.value().is_empty() => Vec::new(),
             Mode::Text => db
-                .search_text_with_limit(name, Some(RESULT_LIMIT))?
+                .search_text_with_limit(self.input.value(), Some(RESULT_LIMIT))?
                 .into_iter()
                 .map(Hit::Text)
                 .collect(),
@@ -392,16 +422,26 @@ impl App {
         let Some(editor) = &mut self.filter_editor else {
             return;
         };
-        let result = editor.apply(db).and_then(|filters| {
-            let hits = particle_hits(db, self.input.value(), filters.as_ref(), self.sort)?;
-            Ok((filters, hits))
+        let result = InlineQuery::parse(self.input.value()).and_then(|query| {
+            let draft = editor.draft();
+            let filters = draft.apply(db)?;
+            let hits = particle_hits(db, &query.name, filters.as_ref(), self.sort)?;
+            let mut text = format_query(&query.name, draft);
+            let cursor = quote_name(&query.name).len();
+            if cursor == 0 && !text.is_empty() {
+                // Leave space between a new name query and the first tag.
+                text.insert(0, ' ');
+            }
+            Ok((filters, hits, SearchInput { text, cursor }))
         });
         match result {
-            Ok((filters, hits)) => {
+            Ok((filters, hits, input)) => {
+                self.input = input;
                 self.filter_editor = None;
                 self.filters = filters;
                 self.pending = None;
                 self.notice = None;
+                self.search_error = None;
                 self.set_hits(hits);
             }
             Err(error) => {
@@ -438,16 +478,25 @@ impl App {
             editor.paste(db, text);
         } else if self.input.insert(text) {
             self.schedule_search();
+            if self.completion.is_some() {
+                self.refresh_completion(db);
+            }
         }
     }
 
     fn copy_search(&mut self) -> Action {
-        match self.source.find_command(
-            self.mode,
-            self.input.value(),
-            self.filters.as_ref(),
-            self.sort,
-        ) {
+        let command = match self.mode {
+            Mode::Particles => InlineQuery::parse(self.input.value()).and_then(|query| {
+                let draft =
+                    (!query.name.is_empty() || self.filters.is_some()).then_some(&query.draft);
+                self.source
+                    .find_command(self.mode, &query.name, draft, self.sort)
+            }),
+            Mode::Text => self
+                .source
+                .find_command(self.mode, self.input.value(), None, self.sort),
+        };
+        match command {
             Ok(Some(value)) => Action::Copy {
                 value,
                 notice: "Sent the find command to the terminal clipboard.".into(),
@@ -482,7 +531,11 @@ impl App {
             match key.code {
                 KeyCode::Char('f') => {
                     self.notice = None;
-                    self.filter_editor = Some(FilterEditor::new(self.filters.as_ref()));
+                    self.completion = None;
+                    match InlineQuery::parse(self.input.value()) {
+                        Ok(query) => self.filter_editor = Some(FilterEditor::new(query.draft)),
+                        Err(error) => self.search_error = Some(error.to_string()),
+                    }
                     return Ok(Action::None);
                 }
                 KeyCode::Char('o') => {
@@ -500,7 +553,14 @@ impl App {
         if !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) {
             return Ok(Action::None);
         }
-        if key.code == KeyCode::Char('?') {
+        let editing_filter_value = self.mode == Mode::Particles
+            && self.detail.is_none()
+            && self.filter_editor.is_none()
+            && self.help.is_none()
+            && matches!(key.code, KeyCode::Char('?' | '/'))
+            && query::editing_filter_value(&self.input);
+        if key.code == KeyCode::Char('?') && !editing_filter_value {
+            self.completion = None;
             self.help = self.help.is_none().then(Help::default);
             return Ok(Action::None);
         }
@@ -523,12 +583,70 @@ impl App {
                 EditorAction::Apply => Action::ApplyFilters,
             });
         }
-        if key.code == KeyCode::Char('/') {
+        if key.code == KeyCode::Char('/') && !editing_filter_value {
             self.detail = None;
             self.detail_history.clear();
             return Ok(Action::None);
         }
         self.browse_key(db, key)
+    }
+
+    fn refresh_completion(&mut self, db: &Pdg) {
+        match query::complete(db, &self.input) {
+            Ok(completions) if !completions.suggestions.is_empty() => {
+                self.completion = Some((completions, ListState::default().with_selected(Some(0))));
+            }
+            Ok(_) => self.completion = None,
+            Err(error) => {
+                self.completion = None;
+                self.notice = Some(error.to_string());
+            }
+        }
+    }
+
+    fn completion_key(&mut self, code: KeyCode) -> bool {
+        let Some((completion, state)) = &mut self.completion else {
+            return false;
+        };
+        let index = state.selected().unwrap_or_default();
+        match code {
+            KeyCode::Up => state.select_previous(),
+            KeyCode::Down => state.select(Some((index + 1).min(completion.suggestions.len() - 1))),
+            KeyCode::Tab if completion.suggestions.len() > 1 => {
+                state.select(Some((index + 1) % completion.suggestions.len()));
+            }
+            KeyCode::Esc => self.completion = None,
+            KeyCode::Enter | KeyCode::Tab => {
+                completion.accept(&mut self.input, index);
+                self.completion = None;
+                self.schedule_search();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn switch_mode(&mut self) {
+        let next = self.other_input.take().unwrap_or_else(|| {
+            let text = match self.mode {
+                Mode::Particles => InlineQuery::parse(self.input.value())
+                    .map_or_else(|_| self.input.value().to_owned(), |query| query.name),
+                Mode::Text => quote_name(self.input.value()),
+            };
+            SearchInput {
+                cursor: text.len(),
+                text,
+            }
+        });
+        self.other_input = Some(std::mem::replace(&mut self.input, next));
+        self.mode = match self.mode {
+            Mode::Particles => Mode::Text,
+            Mode::Text => Mode::Particles,
+        };
+        self.completion = None;
+        self.hits.clear();
+        self.results = ListState::default();
+        self.schedule_search();
     }
 
     fn browse_key(&mut self, db: &Pdg, key: KeyEvent) -> CliResult<Action> {
@@ -552,22 +670,42 @@ impl App {
                 code => detail.navigate(code, self.page),
             }
         } else {
+            if key.code == KeyCode::BackTab
+                || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+            {
+                self.switch_mode();
+                return Ok(Action::None);
+            }
+            if self.completion_key(key.code) {
+                return Ok(Action::None);
+            }
             match key.code {
                 KeyCode::Esc => return Ok(Action::Quit),
-                KeyCode::F(3) => return Ok(self.copy_search()),
-                KeyCode::Tab => {
-                    self.mode = if self.mode == Mode::Particles {
-                        Mode::Text
-                    } else {
-                        Mode::Particles
-                    };
-                    self.schedule_search();
+                KeyCode::F(3) => {
+                    if self.mode == Mode::Particles && self.pending.is_some() {
+                        self.search(db)?;
+                    }
+                    if self.search_error.is_none() {
+                        return Ok(self.copy_search());
+                    }
+                }
+                KeyCode::Tab if self.mode == Mode::Particles => {
+                    self.refresh_completion(db);
+                    if self
+                        .completion
+                        .as_ref()
+                        .is_some_and(|(items, _)| items.suggestions.len() == 1)
+                    {
+                        self.completion_key(KeyCode::Enter);
+                    }
                 }
                 KeyCode::Enter => {
                     if self.pending.is_some() {
                         self.search(db)?;
                     }
-                    if let Some(hit) = self.selected_hit() {
+                    if self.search_error.is_none()
+                        && let Some(hit) = self.selected_hit()
+                    {
                         self.detail = Detail::open(db, hit)?;
                         if self.detail.is_none() {
                             self.notice = Some("This result has no PDG entry to open.".into());
@@ -579,8 +717,13 @@ impl App {
                 KeyCode::PageUp => self.move_result(false, usize::from(self.page)),
                 KeyCode::PageDown => self.move_result(true, usize::from(self.page)),
                 _ => {
-                    if self.input.key(key) {
+                    let cursor = self.input.cursor;
+                    let changed = self.input.key(key);
+                    if changed {
                         self.schedule_search();
+                    }
+                    if self.completion.is_some() && (changed || cursor != self.input.cursor) {
+                        self.refresh_completion(db);
                     }
                 }
             }
@@ -684,9 +827,38 @@ impl App {
             self.draw_results(frame, body);
         }
         frame.render_widget(footer, footer_area);
+        self.draw_completion(frame, input, area);
         if let Some(editor) = &mut self.filter_editor {
             editor.draw(frame, area, self.accent);
         }
+    }
+
+    fn draw_completion(&mut self, frame: &mut Frame<'_>, input: Rect, area: Rect) {
+        let Some((completion, state)) = &mut self.completion else {
+            return;
+        };
+        let height = u16::try_from(completion.suggestions.len() + 2)
+            .unwrap_or(u16::MAX)
+            .min(7)
+            .min(area.bottom().saturating_sub(input.bottom()));
+        let bounds = Rect::new(input.x, input.bottom(), input.width.min(46), height);
+        let items = completion
+            .suggestions
+            .iter()
+            .map(|choice| ListItem::new(choice.label.as_str()));
+        frame.render_widget(Clear, bounds);
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(
+                    Block::bordered()
+                        .title(" ↑↓  Enter Fill  Esc ")
+                        .border_style(self.accent),
+                )
+                .highlight_symbol("› ")
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            bounds,
+            state,
+        );
     }
 
     fn draw_input(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -768,7 +940,7 @@ impl App {
                 ""
             };
             lines.push(Line::raw(format!(
-                "? Help  {particle_controls}F3 Copy search  Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
+                "? Help  {particle_controls}F3 Copy search  Shift+Tab Switch search  ↑↓ Select  Enter Open  Esc Quit"
             )));
         }
         Paragraph::new(lines).wrap(Wrap { trim: true })
@@ -781,9 +953,12 @@ impl App {
         if self.detail.is_some() {
             return String::new();
         }
-        if self.input.value().is_empty() && (self.mode == Mode::Text || self.filters.is_none()) {
+        if let Some(error) = &self.search_error {
+            return error.clone();
+        }
+        if self.input.value().is_empty() {
             return match self.mode {
-                Mode::Particles => "Type a name or alias, such as f980.".into(),
+                Mode::Particles => "Try f980 mass:900..1100.".into(),
                 Mode::Text => "Search PDG descriptions, text, and footnotes.".into(),
             };
         }
@@ -958,7 +1133,10 @@ mod tests {
         let mut app = search_with_kaon_filters(&db);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         assert_eq!(app.hits.len(), 27);
-        assert_eq!(app.input.value(), "");
+        assert_eq!(
+            app.input.value(),
+            "class:meson charge:0 mass:900..2000 decays-to:KS,KS"
+        );
         assert!(matches!(
             app.key(&db, key(KeyCode::F(3))).unwrap(),
             Action::Copy { value, .. }
@@ -1017,13 +1195,15 @@ mod tests {
         app.key(&db, key(KeyCode::Esc)).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
 
-        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.key(&db, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .unwrap();
         assert!(app.mode == Mode::Text && app.filters.is_some());
         assert!(matches!(
             app.key(&db, key(KeyCode::F(3))).unwrap(),
             Action::Copy { value, .. } if value == "pdg find --limit=50 --text f980"
         ));
-        app.key(&db, key(KeyCode::Tab)).unwrap();
+        app.key(&db, KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT))
+            .unwrap();
         app.search(&db).unwrap();
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
     }
@@ -1071,6 +1251,81 @@ mod tests {
             Action::Copy { value, .. }
                 if value == "pdg find --limit=50 --parity=- --c-parity=+ pi"
         ));
+    }
+
+    #[test]
+    fn inline_search_keeps_last_good_results_and_exports_the_resolved_query() {
+        let db = test_db();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut app = App::new("f980", false, SearchSource::default());
+        app.search(&db).unwrap();
+        app.paste(&db, " mass:");
+        app.search(&db).unwrap();
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+        assert!(app.status().contains("Enter a value for mass"));
+        assert!(matches!(
+            app.key(&db, key(KeyCode::F(3))).unwrap(),
+            Action::None
+        ));
+        app.key(&db, key(KeyCode::Enter)).unwrap();
+        assert!(app.detail.is_none());
+        app.paste(&db, "900..1100 decays-to:KS,KS");
+        app.search(&db).unwrap();
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+        assert!(
+            matches!(app.key(&db, key(KeyCode::F(3))).unwrap(), Action::Copy { value, .. }
+            if value == "pdg find --limit=50 --mass=900..1100 --decays-to=KS,KS f980")
+        );
+
+        app.key(
+            &db,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        app.apply_filters(&db);
+        assert_eq!(app.input.value(), "f980 mass:900..1100 decays-to:KS,KS");
+        assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
+    }
+
+    #[test]
+    fn search_bar_completes_a_tag_and_each_repeated_decay_product() {
+        let db = test_db();
+        let complete = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let mut app = App::new("decays-t", false, SearchSource::default());
+        app.key(&db, complete).unwrap();
+        assert!(app.completion.is_none());
+        assert_eq!(app.input.value(), "decays-to:");
+        for text in ["KS", ",KS"] {
+            app.paste(&db, text);
+            app.key(&db, complete).unwrap();
+            if app.completion.is_some() {
+                app.key(&db, enter).unwrap();
+            }
+        }
+        assert_eq!(app.input.value(), "decays-to:K(S)0,K(S)0");
+        app.search(&db).unwrap();
+        assert!(!app.hits.is_empty());
+        assert!(app.search_error.is_none());
+    }
+
+    #[test]
+    fn tab_cycles_multiple_tag_matches_and_shift_tab_switches_modes() {
+        let db = test_db();
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        let mut app = App::new("decays-", false, SearchSource::default());
+        app.key(&db, tab).unwrap();
+        assert!(app.completion.is_some());
+        assert_eq!(app.input.value(), "decays-");
+        app.key(&db, tab).unwrap();
+        app.key(&db, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.input.value(), "decays-from:");
+        app.key(&db, tab).unwrap();
+        assert!(app.mode == Mode::Particles && app.completion.is_none());
+        app.key(&db, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .unwrap();
+        assert!(app.mode == Mode::Text && app.completion.is_none());
     }
 
     #[test]
@@ -1169,7 +1424,10 @@ mod tests {
         assert!(app.detail.is_none());
         assert!(app.detail_history.is_empty());
         assert_eq!(app.selected_hit().map(Hit::pdgid), Some("M003"));
-        assert_eq!(app.input.value(), "f980");
+        assert_eq!(
+            app.input.value(),
+            "f980 class:meson charge:0 mass:900..2000 decays-to:KS,KS"
+        );
         assert!(app.filters.is_some());
     }
 

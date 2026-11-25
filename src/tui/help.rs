@@ -39,10 +39,12 @@ impl Help {
         let lines = vec![
             Line::raw("Search").bold(),
             binding("/", "  Focus the search bar"),
-            binding("Tab", "  Switch between particle and text search"),
+            binding("Shift+Tab", "  Switch between particle and text search"),
             binding("↑↓ / PgUp/PgDn", "  Select a result"),
             binding("Enter", "  Open a result"),
             binding("Ctrl+F", "  Open advanced filters in particle search"),
+            binding("Tab", "  Complete a filter tag or value"),
+            Line::raw("Use inline filters such as f980 mass:900..1100."),
             binding("Ctrl+O", "  Toggle mass order in particle search"),
             binding("F3", "  Copy the search as a pdg find command"),
             Line::default(),

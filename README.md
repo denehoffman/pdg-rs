@@ -82,9 +82,13 @@ pdg tui f980
 pdg tui --text 'form factors'
 ```
 
-Type to search, press Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. The detail pane numbers the available tabs from left to right starting at 1. Click a tab, press its displayed number, or use Tab and Shift+Tab to switch views. The **Text** tab shows the matched passage for a text result. **Overview** shows the recorded value when you open a specific mass or decay record. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
+Type to search, press Shift+Tab to switch between particle names and PDG text, and use the arrow keys to select a result. Enter opens it. The detail pane numbers the available tabs from left to right starting at 1. Click a tab, press its displayed number, or use Tab and Shift+Tab to switch views. The **Text** tab shows the matched passage for a text result. **Overview** shows the recorded value when you open a specific mass or decay record. Use the arrow or Page Up and Page Down keys to scroll. Esc returns to the results or exits from the search screen, and Ctrl+C exits from either screen.
 
 Press `?` to see keyboard and mouse controls. Close help with `?` or Esc to return to the same screen. Press `/` from an entry to return to the search bar with the current query and filters.
+
+Use `field:value` to filter from the particle search bar. For example, type `decays-to:KS,KS mass:1000..2000` or `f980 mass:900..1100`. Tags use the `pdg find` flag names without the leading dashes. Quote a value with spaces, as in `decays-to:"neutral pion,neutral pion"`. The boolean tag `include-unknown-properties` takes `true` or `false`.
+
+Press Tab to complete a tag, a selectable value, or a decay state under the cursor. If several choices are available, use Tab or the arrow keys to select one, then press Enter. The filter form edits the tags in the search bar, and F3 copies them as the equivalent CLI flags.
 
 Press Ctrl+F from particle search to open the advanced filters. The form supports all `pdg find` particle filters, including signed MCID, spin, isospin, parity, C-parity, and G-parity. Use Tab or Shift+Tab to move between fields. On a selectable field, use Left or Right to cycle, or press Space to open the list and Enter to choose an option. Spin also has a **Custom…** option for PDG spin strings.
 

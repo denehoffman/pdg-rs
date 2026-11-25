@@ -541,7 +541,7 @@ impl From<DecayExpansionArg> for DecayStateExpansion {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum QuantumArg<T> {
     Missing,
     Value(T),
