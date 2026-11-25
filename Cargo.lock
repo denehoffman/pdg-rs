@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-rs"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "clap",
