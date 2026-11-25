@@ -15,6 +15,8 @@ use super::SearchInput;
 use crate::{
     CHARGE_VALUES, CLASS_VALUES, CliError, CliResult, ISOSPIN_VALUES, PARITY_VALUES,
     PARTICLE_TYPE_VALUES, ParticleFilters, SPIN_VALUES, build_query, has_particle_filters,
+    parse_charge, parse_class, parse_isospin_filter, parse_parity_filter, parse_particle_type,
+    parse_spin_filter,
 };
 
 pub(super) struct AppliedFilters {
@@ -24,8 +26,8 @@ pub(super) struct AppliedFilters {
 }
 
 impl AppliedFilters {
-    pub(super) fn command_options(&self) -> impl Iterator<Item = (&'static str, Option<&str>)> {
-        self.draft.command_options()
+    pub(super) fn matches(&self, draft: &Draft) -> bool {
+        self.draft.command_options().eq(draft.command_options())
     }
 }
 
@@ -36,7 +38,7 @@ enum Control {
 }
 
 #[derive(Clone)]
-struct Draft {
+pub(super) struct Draft {
     controls: [Control; Field::ALL.len()],
 }
 
@@ -56,15 +58,62 @@ impl Default for Draft {
 
 impl Draft {
     fn particle_filters(&self) -> CliResult<ParticleFilters> {
-        let args = self.command_options().map(|(flag, value)| {
-            value.map_or_else(|| flag.to_owned(), |value| format!("{flag}={value}"))
-        });
-        ParticleFilters::try_parse_from(std::iter::once("pdg find".to_owned()).chain(args)).map_err(
-            |error| {
-                let message = error.to_string();
-                CliError::InvalidArgument(message.lines().next().unwrap_or(&message).to_owned())
-            },
-        )
+        parse_options(self.command_options())
+    }
+
+    pub(super) fn from_options<'a>(
+        options: impl IntoIterator<Item = (&'static str, Option<&'a str>)> + Clone,
+    ) -> CliResult<Self> {
+        // Validate before writing controls so a malformed value cannot look like Any.
+        let filters = parse_options(options.clone())?;
+        build_query(&filters)?;
+        let mut draft = Self::default();
+        for (flag, value) in options {
+            if flag == "--decay-contains" {
+                draft.controls[Field::DecayMode as usize] = Control::Choice(1);
+            }
+            if let Some(field) = Field::for_flag(flag) {
+                draft.set_value(field, value.unwrap_or(KEEP_PARTICLE));
+            }
+        }
+        Ok(draft)
+    }
+
+    fn set_value(&mut self, field: Field, value: &str) {
+        match &mut self.controls[field as usize] {
+            Control::Text(input) => {
+                input.insert(value);
+            }
+            Control::Choice(index) => {
+                if let Some(choice) = field.choice_index(value) {
+                    *index = choice;
+                } else if field == Field::Spin {
+                    *index = field.choice_count() - 1;
+                    let Control::Text(input) = &mut self.controls[Field::CustomSpin as usize]
+                    else {
+                        unreachable!();
+                    };
+                    input.insert(value);
+                }
+            }
+        }
+    }
+
+    pub(super) fn apply(&self, db: &Pdg) -> CliResult<Option<AppliedFilters>> {
+        let filters = self.particle_filters()?;
+        let query = build_query(&filters)?;
+        if !has_particle_filters(&filters) {
+            return Ok(None);
+        }
+        Ok(Some(AppliedFilters {
+            draft: self.clone(),
+            summary: self.summary(),
+            hits: db
+                .search_particle_hits(query)?
+                .into_iter()
+                .map(ParticleFilterHit::into_owned)
+                .collect(),
+        }))
     }
 
     fn value(&self, field: Field) -> &str {
@@ -82,7 +131,7 @@ impl Draft {
         }
     }
 
-    fn command_options(&self) -> impl Iterator<Item = (&'static str, Option<&str>)> {
+    pub(super) fn command_options(&self) -> impl Iterator<Item = (&'static str, Option<&str>)> {
         Field::ALL.into_iter().filter_map(|field| {
             let value = self.applied_value(field);
             let flag = match field {
@@ -93,7 +142,7 @@ impl Draft {
                 }
                 Field::DecayExpansion if value == "inclusive" => return None,
                 Field::Products if self.value(Field::DecayMode) == "Contains" => "--decay-contains",
-                _ => field.flag(),
+                _ => field.flag()?,
             };
             (!value.is_empty()).then_some((flag, Some(value)))
         })
@@ -133,11 +182,37 @@ impl Draft {
     }
 }
 
+fn parse_options<'a>(
+    options: impl IntoIterator<Item = (&'static str, Option<&'a str>)>,
+) -> CliResult<ParticleFilters> {
+    let mut args = vec!["pdg find".to_owned()];
+    for (flag, value) in options {
+        if let Some(value) = value {
+            if Field::for_flag(flag).and_then(Field::decay_side).is_some()
+                && value.split(',').any(|state| state.trim().is_empty())
+            {
+                return Err(CliError::InvalidArgument(format!(
+                    "Enter a decay state on each side of a comma in {}.",
+                    flag.trim_start_matches('-'),
+                )));
+            }
+            args.push(format!("{flag}={value}"));
+        } else {
+            args.push(flag.to_owned());
+        }
+    }
+    ParticleFilters::try_parse_from(args).map_err(|error| {
+        let message = error.to_string();
+        let line = message.lines().next().unwrap_or(&message);
+        CliError::InvalidArgument(line.strip_prefix("error: ").unwrap_or(line).to_owned())
+    })
+}
+
 const CUSTOM_SPIN: &str = "Custom…";
 const KEEP_PARTICLE: &str = "Keep particle";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Field {
+pub(super) enum Field {
     Class,
     Type,
     Charge,
@@ -204,8 +279,8 @@ impl Field {
         }
     }
 
-    const fn flag(self) -> &'static str {
-        match self {
+    const fn flag(self) -> Option<&'static str> {
+        Some(match self {
             Self::Class => "--class",
             Self::Type => "--type",
             Self::Charge => "--charge",
@@ -221,8 +296,55 @@ impl Field {
             Self::Products => "--decays-to",
             Self::DecaysFrom => "--decays-from",
             Self::DecayExpansion => "--decay-expansion",
-            Self::CustomSpin | Self::DecayMode | Self::IncludeUnknown => unreachable!(),
+            Self::IncludeUnknown => "--include-unknown-properties",
+            Self::CustomSpin | Self::DecayMode => return None,
+        })
+    }
+
+    pub(super) fn flags() -> impl Iterator<Item = &'static str> {
+        Self::ALL
+            .into_iter()
+            .filter_map(Self::flag)
+            .chain(["--decay-contains"])
+    }
+
+    pub(super) fn for_flag(flag: &str) -> Option<Self> {
+        if flag == "--decay-contains" {
+            return Some(Self::Products);
         }
+        Self::ALL
+            .into_iter()
+            .find(|field| field.flag() == Some(flag))
+    }
+
+    fn choice_index(self, value: &str) -> Option<usize> {
+        fn equivalent<T: PartialEq>(
+            choices: &[&str],
+            value: &str,
+            parse: impl Fn(&str) -> Result<T, String>,
+        ) -> Option<usize> {
+            let value = parse(value).ok()?;
+            choices
+                .iter()
+                .position(|choice| parse(choice).is_ok_and(|choice| choice == value))
+        }
+
+        let choices = self.choices();
+        let index = choices
+            .iter()
+            .position(|choice| *choice == value)
+            .or_else(|| match self {
+                Self::Class => equivalent(choices, value, parse_class),
+                Self::Type => equivalent(choices, value, parse_particle_type),
+                Self::Charge => equivalent(choices, value, parse_charge),
+                Self::Spin => equivalent(choices, value, parse_spin_filter),
+                Self::Isospin => equivalent(choices, value, parse_isospin_filter),
+                Self::Parity | Self::CParity | Self::GParity => {
+                    equivalent(choices, value, parse_parity_filter)
+                }
+                _ => None,
+            })?;
+        Some(index + usize::from(self.has_any()))
     }
 
     const fn placeholder(self) -> &'static str {
@@ -237,7 +359,7 @@ impl Field {
         }
     }
 
-    const fn decay_side(self) -> Option<DecayStateSide> {
+    pub(super) const fn decay_side(self) -> Option<DecayStateSide> {
         match self {
             Self::Products => Some(DecayStateSide::Final),
             Self::DecaysFrom => Some(DecayStateSide::Initial),
@@ -245,7 +367,7 @@ impl Field {
         }
     }
 
-    const fn choices(self) -> &'static [&'static str] {
+    pub(super) const fn choices(self) -> &'static [&'static str] {
         match self {
             Self::Class => CLASS_VALUES,
             Self::Type => PARTICLE_TYPE_VALUES,
@@ -341,20 +463,18 @@ impl DecaySuggestions {
     }
 }
 
-fn decay_token(input: &SearchInput) -> Range<usize> {
-    let start = input.text[..input.cursor]
-        .rfind(',')
-        .map_or(0, |index| index + 1);
-    let end = input.text[input.cursor..]
+pub(super) fn decay_token(text: &str, cursor: usize) -> Range<usize> {
+    let start = text[..cursor].rfind(',').map_or(0, |index| index + 1);
+    let end = text[cursor..]
         .find(',')
-        .map_or(input.text.len(), |index| input.cursor + index);
+        .map_or(text.len(), |index| cursor + index);
     start..end
 }
 
 impl FilterEditor {
-    pub(super) fn new(filters: Option<&AppliedFilters>) -> Self {
+    pub(super) const fn new(draft: Draft) -> Self {
         Self {
-            draft: filters.map_or_else(Draft::default, |filters| filters.draft.clone()),
+            draft,
             focus: 0,
             menu: None,
             suggestions: None,
@@ -363,20 +483,8 @@ impl FilterEditor {
         }
     }
 
-    pub(super) fn apply(&self, db: &Pdg) -> CliResult<Option<AppliedFilters>> {
-        let filters = self.draft.particle_filters()?;
-        if !has_particle_filters(&filters) {
-            return Ok(None);
-        }
-        Ok(Some(AppliedFilters {
-            draft: self.draft.clone(),
-            summary: self.draft.summary(),
-            hits: db
-                .search_particle_hits(build_query(&filters)?)?
-                .into_iter()
-                .map(ParticleFilterHit::into_owned)
-                .collect(),
-        }))
+    pub(super) const fn draft(&self) -> &Draft {
+        &self.draft
     }
 
     pub(super) fn key(&mut self, db: &Pdg, key: KeyEvent) -> EditorAction {
@@ -415,10 +523,12 @@ impl FilterEditor {
             }
             _ => match &mut self.draft.controls[field as usize] {
                 Control::Text(input) => {
-                    let previous_token = field.decay_side().map(|_| decay_token(input));
+                    let previous_token = field
+                        .decay_side()
+                        .map(|_| decay_token(&input.text, input.cursor));
                     let changed = input.key(key);
                     if let Some(previous_token) = previous_token
-                        && (changed || previous_token != decay_token(input))
+                        && (changed || previous_token != decay_token(&input.text, input.cursor))
                     {
                         self.refresh_suggestions(db);
                     }
@@ -458,7 +568,12 @@ impl FilterEditor {
         } else {
             DecayStateExpansion::Inclusive
         };
-        match db.suggest_decay_states(&input.text[decay_token(input)], side, expansion, 8) {
+        match db.suggest_decay_states(
+            &input.text[decay_token(&input.text, input.cursor)],
+            side,
+            expansion,
+            8,
+        ) {
             Ok(names) if !names.is_empty() => {
                 self.suggestions = Some(DecaySuggestions {
                     names,
@@ -488,7 +603,7 @@ impl FilterEditor {
                     return false;
                 };
                 let replacement = &suggestions.names[index];
-                let token = decay_token(input);
+                let token = decay_token(&input.text, input.cursor);
                 input.cursor = token.start + replacement.len();
                 input.text.replace_range(token, replacement);
                 self.suggestions = None;
@@ -679,7 +794,7 @@ mod tests {
     #[test]
     fn choosing_a_type_and_spin_uses_the_cli_filter_values() {
         let db = test_db();
-        let mut editor = FilterEditor::new(None);
+        let mut editor = FilterEditor::new(Draft::default());
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         editor.key(&db, key(KeyCode::Tab));
         editor.key(&db, key(KeyCode::End));
@@ -714,7 +829,7 @@ mod tests {
             hits: Vec::new(),
         };
         assert_eq!(
-            applied.command_options().collect::<Vec<_>>(),
+            applied.draft.command_options().collect::<Vec<_>>(),
             [
                 ("--type", Some("self-conjugate")),
                 ("--spin", Some("2,3")),
@@ -726,7 +841,7 @@ mod tests {
     #[test]
     fn missing_value_choices_stay_separate_from_the_label_in_a_narrow_terminal() {
         let db = test_db();
-        let mut editor = FilterEditor::new(None);
+        let mut editor = FilterEditor::new(Draft::default());
         focus(&mut editor, Field::IncludeUnknown);
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -749,7 +864,7 @@ mod tests {
     #[test]
     fn decay_choice_hints_follow_the_highlighted_option() {
         let db = test_db();
-        let mut editor = FilterEditor::new(None);
+        let mut editor = FilterEditor::new(Draft::default());
         let backend = ratatui::backend::TestBackend::new(64, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
@@ -791,7 +906,7 @@ mod tests {
     #[test]
     fn decay_completion_replaces_only_the_token_under_the_cursor() {
         let db = test_db();
-        let mut editor = FilterEditor::new(None);
+        let mut editor = FilterEditor::new(Draft::default());
         focus(&mut editor, Field::Products);
         editor.paste(&db, "K(S)0, Kₛ,K(S)0");
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
@@ -823,7 +938,7 @@ mod tests {
     #[test]
     fn additional_controls_use_the_cli_values_and_boolean_flag() {
         let db = test_db();
-        let mut editor = FilterEditor::new(None);
+        let mut editor = FilterEditor::new(Draft::default());
         for (field, input) in [
             (Field::Mcid, "-211"),
             (Field::Width, "0..100"),

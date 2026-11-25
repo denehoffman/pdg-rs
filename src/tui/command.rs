@@ -1,6 +1,6 @@
 use std::path::{self, PathBuf};
 
-use super::{Mode, RESULT_LIMIT, filters::AppliedFilters};
+use super::{Mode, RESULT_LIMIT, filters::Draft};
 use crate::{CliError, CliResult, DatabaseOptions, ParticleSort};
 
 #[derive(Default)]
@@ -23,7 +23,7 @@ impl SearchSource {
         &self,
         mode: Mode,
         query: &str,
-        filters: Option<&AppliedFilters>,
+        filters: Option<&Draft>,
         sort: ParticleSort,
     ) -> CliResult<Option<String>> {
         let filters = if mode == Mode::Particles {
