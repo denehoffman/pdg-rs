@@ -1863,7 +1863,7 @@ mod tests {
             .unwrap();
 
         assert!(result.text.contains("K(S)0 MEAN LIFE"));
-        assert!(!result.snippet.is_empty());
+        assert_ne!(result.snippet, "");
         assert!(result.pdg_text.is_none());
     }
 
@@ -1880,7 +1880,7 @@ mod tests {
             .unwrap();
 
         assert!(result.text.contains("Measurements given as a Kbar0 ratio"));
-        assert!(!result.snippet.is_empty());
+        assert_ne!(result.snippet, "");
         assert_eq!(
             result.pdg_text.as_ref().unwrap().text.as_deref(),
             Some(result.text.as_str())
@@ -1899,7 +1899,7 @@ mod tests {
 
         assert_eq!(result.pdgid, "S042P86");
         assert!(result.text.contains("normalisation decay"));
-        assert!(!result.snippet.is_empty());
+        assert_ne!(result.snippet, "");
         assert!(result.pdg_text.is_none());
     }
 

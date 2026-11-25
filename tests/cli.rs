@@ -416,7 +416,7 @@ fn find_mcid_composes_with_name_and_charge_filters() {
             assert_eq!(hits.len(), 1);
             assert_eq!(hits[0]["name"], "pi-");
         } else {
-            assert!(hits.is_empty());
+            assert_eq!(hits, [] as [serde_json::Value; 0]);
         }
     }
 }
@@ -565,7 +565,10 @@ fn mass_order_applies_before_the_limit_and_preserves_decay_matches() {
             serde_json::from_slice(&result.get_output().stdout).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["name"], "a_0(980)0");
-        assert!(!hits[0]["matching_decays"].as_array().unwrap().is_empty());
+        assert_ne!(
+            hits[0]["matching_decays"].as_array().unwrap().as_slice(),
+            [] as [serde_json::Value; 0]
+        );
     }
     pdg_command()
         .args(["find", "--text", "form factors", "--sort", "mass"])
@@ -812,7 +815,10 @@ fn find_and_decay_filters_use_resonance_shorthand() {
     };
     let canonical = search("f_0(980)");
     let matches: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-    assert!(!matches.as_array().unwrap().is_empty());
+    assert_ne!(
+        matches.as_array().unwrap().as_slice(),
+        [] as [serde_json::Value; 0]
+    );
     assert_eq!(search("f0980"), canonical);
     assert_eq!(search("f980"), canonical);
     pdg_command()
@@ -1036,7 +1042,7 @@ fn show_evidence_views_find_property_measurements_and_unique_references() {
     assert_eq!(value["view"], "references");
     let references = value["references"].as_array().unwrap();
     let mut document_ids = std::collections::HashSet::new();
-    assert!(!references.is_empty());
+    assert_ne!(references.as_slice(), [] as [serde_json::Value; 0]);
     assert!(
         references
             .iter()

@@ -1436,11 +1436,23 @@ mod tests {
         let db = test_pdg();
 
         let pion = db.particle("pi+").unwrap().unwrap();
-        assert!(pion.particle_class == ParticleClass::Meson);
-        assert!(db.particle("p").unwrap().unwrap().particle_class == ParticleClass::Baryon);
-        assert!(db.particle("e-").unwrap().unwrap().particle_class == ParticleClass::Lepton);
-        assert!(db.particle("d").unwrap().unwrap().particle_class == ParticleClass::Quark);
-        assert!(db.particle("gamma").unwrap().unwrap().particle_class == ParticleClass::GaugeBoson);
+        assert_eq!(pion.particle_class, ParticleClass::Meson);
+        assert_eq!(
+            db.particle("p").unwrap().unwrap().particle_class,
+            ParticleClass::Baryon
+        );
+        assert_eq!(
+            db.particle("e-").unwrap().unwrap().particle_class,
+            ParticleClass::Lepton
+        );
+        assert_eq!(
+            db.particle("d").unwrap().unwrap().particle_class,
+            ParticleClass::Quark
+        );
+        assert_eq!(
+            db.particle("gamma").unwrap().unwrap().particle_class,
+            ParticleClass::GaugeBoson
+        );
     }
 
     #[test]
@@ -2097,7 +2109,7 @@ mod tests {
         assert_eq!(related_ratio.data_type, DataType::BranchingRatio);
         assert!(related_ratio.description.contains("G(pi+ --> e+ nu_e)"));
         assert!(related_ratio.value.value.unwrap() > 0.0);
-        assert!(!related_ratio.value.display_value_text.is_empty());
+        assert_ne!(related_ratio.value.display_value_text, "");
 
         assert_eq!(
             related_ratio.measurements().unwrap().len(),
