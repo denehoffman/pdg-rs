@@ -4,7 +4,6 @@ description = "Programmatic access to the Particle Data Group's database with Ru
 version = "0.1.3"
 edition = "2024"
 authors = ["Nathaniel Dene Hoffman <nhoffman@wm.edu>"]
-homepage = "https://github.com/denehoffman/pdg-rs"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/denehoffman/pdg-rs"
 keywords = ["particle", "physics", "pdg"]
