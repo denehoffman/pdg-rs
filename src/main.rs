@@ -760,20 +760,15 @@ fn run_text(
     let results =
         db.search_text_with_limit(query, output.result_limit(Some(DEFAULT_SEARCH_LIMIT)))?;
     match output.format {
-        OutputFormat::Pretty => {
-            print_text_results(&results, show_full_text);
-            Ok(())
-        }
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &results.iter().map(TextSearchDto::from).collect::<Vec<_>>()
-                )?
-            );
-            Ok(())
-        }
+        OutputFormat::Pretty => print_text_results(&results, show_full_text),
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &results.iter().map(TextSearchDto::from).collect::<Vec<_>>()
+            )?
+        ),
     }
+    Ok(())
 }
 
 fn run_show(command: &ShowCommand, database: &DatabaseOptions) -> CliResult<()> {
